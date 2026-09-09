@@ -282,9 +282,20 @@ fm_task_inbox_doorbell_line() {  # <record-path>
 # CONSTANT line the worker recovers semantically, while skipping on ambiguous
 # verdicts would starve a harness whose idle screen the classifier cannot
 # positively identify (that classifier is advisory here by design).
-fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label]
-  local backend=$1 target=$2 rec=$3 label=${4:-} line cstate verdict
-  case "$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)" in
+#
+# The optional fifth argument is the task's VERIFIED HARNESS FAMILY
+# (bin/fm-control-lib.sh's fm_control_harness_family). It exists for the same
+# reason fm_backend_agent_state takes one: on a backend whose build does not
+# integrate with the task's harness, a LIVE worker answers exactly as an empty
+# endpoint does, and reading that as `dead` here is the one failure that is
+# silent. Every guarded lifecycle path refuses loudly on the same blind read,
+# but the doorbell would simply never be typed and the watcher would escalate
+# the worker as unavailable rather than re-ring it, leaving the worker
+# startable but permanently unsteerable. A caller with no harness in hand may
+# omit it and gets the harness-blind classification unchanged.
+fm_task_inbox_ring() {  # <backend> <target> <record-path> [expected-label] [harness]
+  local backend=$1 target=$2 rec=$3 label=${4:-} harness=${5:-} line cstate verdict
+  case "$(fm_backend_agent_state "$backend" "$target" "$harness" 2>/dev/null || true)" in
     dead|missing) return 3 ;;
   esac
   if ! line=$(fm_task_inbox_doorbell_line "$rec"); then

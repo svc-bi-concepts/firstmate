@@ -282,6 +282,11 @@ The generic Herdr agent-liveness probe reuses the same classifier.
 A structurally gone pane becomes `missing`, a restored agent-less shell becomes `dead`, a registered agent becomes `alive`, and an unexpected read becomes `unreadable`.
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
 
+That agent-free reading holds only for a harness the installed Herdr build integrates with.
+For one it does not, `agent get` answers `agent_not_found` for a live worker exactly as it does for an empty pane, so callers pass the task's recorded harness family and such a harness resolves to `unknown` instead: husk replacement, the duplicate-launch guards, and every lifecycle verb then refuse rather than act on a blind read, while the steering doorbell still rings.
+A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
+`cortex` is the adapter this applies to today, verified live on a real server; [`verification/cortex.md`](verification/cortex.md) owns that evidence, and the same Herdr-side gap remains open and unguarded for `rovo` ([`verification/rovo.md`](verification/rovo.md)).
+
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
 

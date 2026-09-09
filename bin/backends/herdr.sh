@@ -2010,8 +2010,19 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 #              change as "the pane exists"). The caller must fail safe toward
 #              refusal here, never toward closing - this is the conservative
 #              backstop the husk check depends on.
-fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
-  local session=$1 pane_id=$2 out code presence status
+#
+# The optional third argument is the pane's VERIFIED HARNESS FAMILY
+# (bin/fm-control-lib.sh's fm_control_harness_family), and it exists because
+# agent_not_found only means "agent-free" for a harness herdr's installed build
+# actually integrates with. cortex is not one of them, so a live cortex worker
+# answers agent_not_found exactly like an empty restored pane does, and reading
+# that as no-agent would let the callers below stop, relaunch into, or close a
+# running worker. For cortex that response therefore resolves to `unknown` - the
+# honest verdict - so every caller that needs POSITIVE agent-free proof refuses.
+# A caller that passes no harness gets the harness-blind classification
+# unchanged, and no other harness's verdict is affected.
+fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
+  local session=$1 pane_id=$2 harness=${3:-} out code presence status
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -2023,7 +2034,11 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    [ "$code" = "agent_not_found" ] && printf 'no-agent' || printf 'unknown'
+    case "$code:$harness" in
+      agent_not_found:cortex) printf 'unknown' ;;
+      agent_not_found:*) printf 'no-agent' ;;
+      *) printf 'unknown' ;;
+    esac
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)
@@ -2038,8 +2053,8 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id>
 # confirm; live and unknown both refuse (1), so an inconclusive read never
 # licenses closing anything. Restored-layout recovery depends on this
 # fail-safe-toward-refusal behavior.
-fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
-  case "$(fm_backend_herdr_pane_agent_state "$1" "$2")" in
+fm_backend_herdr_tab_is_husk() {  # <session> <pane_id> [harness]
+  case "$(fm_backend_herdr_pane_agent_state "$1" "$2" "${3:-}")" in
     dead|no-agent) return 0 ;;
     *) return 1 ;;
   esac
@@ -2050,10 +2065,10 @@ fm_backend_herdr_tab_is_husk() {  # <session> <pane_id>
 # creating a second Herdr state machine: a structurally gone pane is `missing`,
 # a confirmed agent-less pane is `dead`, a registered agent is `alive`, and an
 # unexpected or failed API read is `unreadable`.
-fm_backend_herdr_agent_state() {  # <target>
-  local target=$1
+fm_backend_herdr_agent_state() {  # <target> [harness]
+  local target=$1 harness=${2:-}
   fm_backend_herdr_parse_target "$target" || { printf 'unreadable'; return 0; }
-  case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+  case "$(fm_backend_herdr_pane_agent_state "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" "$harness")" in
     dead) printf 'missing' ;;
     no-agent) printf 'dead' ;;
     live) printf 'alive' ;;
@@ -2087,7 +2102,9 @@ fm_backend_herdr_agent_alive() {  # <target>
 # spawn into it again. fm_backend_herdr_tab_is_husk classifies the existing
 # tab's pane conservatively (dead or no-agent only; anything live or
 # ambiguous refuses exactly as before) and, when it is a confirmed husk,
-# this function CLOSES AND REPLACES it instead of refusing.
+# this function CLOSES AND REPLACES it instead of refusing. The task's harness
+# family (5th arg, may be empty) is threaded straight into that classifier, so
+# a harness whose agents herdr cannot see is never mistaken for a husk.
 #
 # Ordering is deliberate: the REPLACEMENT tab is created FIRST, and the husk
 # is closed only AFTER that succeeds - never the reverse. Closing a
@@ -2114,8 +2131,8 @@ fm_backend_herdr_agent_alive() {  # <target>
 # the safety argument). An ADOPTED workspace's caller always passes an empty
 # 4th arg, so this function never even queries for a prune candidate in that
 # case. Echoes "<tab_id> <pane_id>" on success.
-fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id>
-  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
+fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_tab_id> [harness]
+  local container=$1 label=$2 cwd=$3 seeded_tab_id=${4:-} harness=${5:-} session wsid list dup_tabs dup dup_pane dup_tab_ids out tab_id pane_id remaining_dup_tabs
   session=${container%%:*}
   wsid=${container#*:}
   list=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || return 1
@@ -2128,7 +2145,7 @@ fm_backend_herdr_create_task() {  # <container> <label> <cwd> <seeded_default_ta
     while IFS= read -r dup; do
       [ -n "$dup" ] || continue
       dup_pane=$(fm_backend_herdr_pane_for_tab "$session" "$wsid" "$dup")
-      if [ -z "$dup_pane" ] || ! fm_backend_herdr_tab_is_husk "$session" "$dup_pane"; then
+      if [ -z "$dup_pane" ] || ! fm_backend_herdr_tab_is_husk "$session" "$dup_pane" "$harness"; then
         echo "error: herdr tab '$label' already exists in workspace $wsid (session $session)" >&2
         return 1
       fi

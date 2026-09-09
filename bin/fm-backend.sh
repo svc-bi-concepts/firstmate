@@ -887,15 +887,19 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # Only `dead` and `missing` license recovery. The tmux adapter requires a
 # successful session inventory and returns `missing` only when it omits the
 # exact window; the Herdr adapter reuses its husk
-# classifier. Zellij remains unverified because its secondmate ghost-tab and
+# classifier, and takes the task's harness family as an optional third argument
+# because its agent read is blind to a harness herdr's own build does not
+# integrate with (bin/backends/herdr.sh's fm_backend_herdr_pane_agent_state owns
+# that rule). A caller with no harness in hand may omit it and gets today's
+# classification. Zellij remains unverified because its secondmate ghost-tab and
 # agent-process recovery path has not been empirically validated. Orca and cmux
 # do not support secondmate spawns.
-fm_backend_agent_state() {  # <backend> <target>
-  local backend=$1 target=$2
+fm_backend_agent_state() {  # <backend> <target> [harness]
+  local backend=$1 target=$2 harness=${3:-}
   fm_backend_source "$backend" || { printf 'unverified'; return 0; }
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
+    herdr) fm_backend_herdr_agent_state "$target" "$harness" ;;
     *) printf 'unverified' ;;
   esac
 }
@@ -903,8 +907,14 @@ fm_backend_agent_state() {  # <backend> <target>
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
-fm_backend_agent_alive() {  # <backend> <target>
-  case "$(fm_backend_agent_state "$1" "$2")" in
+#
+# It forwards the same optional harness argument fm_backend_agent_state takes,
+# and for the same reason: without it, a backend blind to the task's harness
+# collapses a LIVE worker onto `dead` here too, and `dead` is the one value this
+# three-state view licenses action on. Omitting it keeps today's harness-blind
+# classification, so no existing caller changes behavior.
+fm_backend_agent_alive() {  # <backend> <target> [harness]
+  case "$(fm_backend_agent_state "$1" "$2" "${3:-}")" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;

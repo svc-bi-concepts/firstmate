@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detect the agent harness this process tree runs on.
-# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|unknown
+# Usage: fm-harness.sh                  print own harness: claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|cortex|unknown
 #        fm-harness.sh crew             print the effective CREWMATE harness
 #                                        (config/crew-harness; "default" resolves to own)
 #        fm-harness.sh secondmate       print the harness the PRIMARY uses to launch
@@ -79,6 +79,22 @@ detect_own() {
   # additionally clears foreign markers at rovo's launch boundary as defense in depth.
   [ "${ATLASSIAN_AGENT_TYPE:-}" = "rovo" ] && { echo rovo; return; }
   [ "${ROVODEV_CLI:-}" = "1" ] && { echo rovo; return; }
+  # cortex (Snowflake Cortex Code) sets CORTEX_SESSION_ID and CORTEX_TASK_CONTEXT_ID
+  # on the tool subprocesses it runs (verified live, Cortex Code v1.1.84: both
+  # carried the same session uuid in a Bash tool process, and neither was present
+  # in the launching environment). It does NOT scrub an inherited CLAUDECODE, so a
+  # cortex worker launched from a claude session carries both markers - this must
+  # be tested BEFORE the CLAUDECODE line, the same ordering hazard cursor, gemini,
+  # and rovo already document above. bin/fm-spawn.sh additionally clears foreign
+  # markers at cortex's launch boundary as defense in depth. Unlike gemini's, this
+  # marker is a fast path rather than load-bearing: cortex is a compiled single
+  # binary whose live process name is exactly `cortex`, so the anchored ancestry
+  # arm below covers a hand-started session too. CORTEX_THINKING_EFFORT and the
+  # CORTEX_AGENT_*/COCO_* variables are deliberately NOT used: cortex READS those
+  # from its own settings and environment, so an operator can set them for a
+  # non-cortex process, which is exactly the precedence hazard this layer creates.
+  [ -n "${CORTEX_SESSION_ID:-}" ] && { echo cortex; return; }
+  [ -n "${CORTEX_TASK_CONTEXT_ID:-}" ] && { echo cortex; return; }
   # omp (Oh My Pi) publishes NO harness-identity marker of its own: verified on
   # omp 18.1.11 that PI_CODING_AGENT is absent from the binary and that the
   # default profile sets neither PI_CODING_AGENT_DIR nor OMP_PROFILE in the
@@ -150,6 +166,12 @@ detect_own() {
       *grok*) echo grok; return ;;
       kimi) echo kimi; return ;;
       rovo) echo rovo; return ;;
+      # cortex is a compiled single binary whose live process name is exactly
+      # `cortex` (verified, Cortex Code v1.1.84: `ps -o comm=` reports cortex).
+      # Anchored, never *cortex*, so unrelated commands are not misread as this
+      # harness. It sits above the node*|python* interpreter fallback for the
+      # same reason omp does.
+      cortex) echo cortex; return ;;
       # muse's installed launcher ~/.local/bin/muse execs ~/.local/bin/muse-bin-<version>
       # (verified in the published launcher, muse 0.1.0-R708.1), so the live process
       # name carries the version and CHANGES on every auto-update. Match the stable

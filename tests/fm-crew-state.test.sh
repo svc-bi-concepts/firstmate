@@ -1194,6 +1194,53 @@ test_no_run_busy_pane() {
   pass "no run + a busy semantic record reads working, attributed to its source"
 }
 
+# The cortex adapter's acceptance test: before its semantic source was wired,
+# a cortex worker read `unknown - harness state unavailable` here, so
+# supervision could not tell working from finished. Its hook-written record must
+# now produce a real state through the same path every other converted adapter
+# uses.
+test_no_run_cortex_hook_record_reads_working() {
+  reset_fakes
+  local d; d=$(new_case cortex-busy)
+  make_repo_on_branch "$d/wt" fm/feat-cx
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx.meta" "window=fm:fm-feat-cx" "worktree=$d/wt" "kind=ship" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-cx)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-cx busy --gen "$gen" \
+    --source cortex-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-cx)
+  assert_contains "$out" "state: working" "a cortex busy record must read working"
+  assert_contains "$out" "source: pane" "a cortex busy record must be attributed to the pane source"
+  assert_contains "$out" "cortex-hook" "the cortex verdict must name its semantic source"
+  case "$out" in
+    *"harness state unavailable"*) fail "a wired cortex worker must no longer read harness state unavailable" ;;
+  esac
+  pass "fm-crew-state.sh: a cortex hook record reads working, attributed to cortex-hook"
+}
+
+# Divergence: the case above must not pass merely because ANY record classifies.
+# One adapter's writer may never classify another's task, so a claude-hook record
+# on a cortex task stays unknown - the honest verdict, not a borrowed one.
+test_no_run_cortex_rejects_a_foreign_adapter_record() {
+  reset_fakes
+  local d; d=$(new_case cortex-foreign)
+  make_repo_on_branch "$d/wt" fm/feat-cx2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx2.meta" "window=fm:fm-feat-cx2" "worktree=$d/wt" "kind=ship" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-cx2)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-cx2 busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-cx2)
+  assert_contains "$out" "state: unknown" "a foreign adapter's record must not classify a cortex task"
+  pass "fm-crew-state.sh: a cortex task ignores another adapter's busy record"
+}
+
 # A converted adapter must NOT read working from rendered footer text: the
 # redesign removed that dependency, so a pane painting "esc to interrupt" with
 # no semantic record is unknown, never working and never silently idle.
@@ -1340,6 +1387,58 @@ test_no_run_herdr_husk_dead_still_reads_gone() {
   assert_contains "$out" "agent gone, pane shell remains" "the husk verdict names what actually died"
   assert_not_contains "$out" "backend unreachable" "a husk pane is not an unreachable backend"
   pass "a husk pane (agent gone) still reads gone for reclaim"
+}
+
+# Regression: the DEGRADED read path. herdr's installed build has no cortex
+# integration, so `agent get` answers agent_not_found for a LIVE cortex worker
+# exactly as it does for an empty pane. When pane_readable's capture also fails
+# (the herdr CLI erroring or stalling under load), the fallback classifier used
+# to read that as positive death and emit "agent gone, pane shell remains" about
+# a running worker - a false claim that invites a teardown. Passing the task's
+# verified harness family makes the answer unknown, which surfaces as
+# unreachable, so the honest verdict invites a retry instead.
+test_no_run_herdr_cortex_husk_answer_reads_unreachable_not_gone() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr cortex husk test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-cortex-blind)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-cx
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-cx.meta" "window=default:w1:p2" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+  FM_FAKE_HERDR_HUSK=1
+  local out; out=$(run_crew_state "$d" feat-herdr-cx)
+  assert_contains "$out" "state: unknown" "a blind cortex read has no confident current state"
+  assert_contains "$out" "backend unreachable" "a read blind to cortex must report unreachable"
+  assert_not_contains "$out" "backend target gone" "a read blind to cortex is not positive death evidence"
+  assert_not_contains "$out" "agent gone, pane shell remains" \
+    "crew-state must not claim a live cortex worker's agent is gone"
+  pass "a herdr agent_not_found on a cortex task reads unreachable, never gone"
+}
+
+# Divergence: the case above must not pass by making every degraded herdr read
+# unreachable. A harness herdr DOES integrate with keeps its positive death
+# evidence on the identical fixture, so only cortex's verdict moved.
+test_no_run_herdr_husk_verdict_is_harness_scoped() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr husk scoping test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-husk-scoped)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-scoped
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-scoped.meta" "window=default:w1:p2" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+  FM_FAKE_HERDR_HUSK=1
+  local out; out=$(run_crew_state "$d" feat-herdr-scoped)
+  assert_contains "$out" "agent gone, pane shell remains" \
+    "a harness herdr can see keeps its husk death evidence"
+  pass "the cortex-only exemption does not move another harness's husk verdict"
 }
 
 # Regression (2026-07 herdr false-surface incident, now solved semantically):
@@ -2267,12 +2366,16 @@ test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
+test_no_run_cortex_hook_record_reads_working
+test_no_run_cortex_rejects_a_foreign_adapter_record
 test_no_run_footer_text_alone_is_not_working
 test_no_run_grok_uses_isolated_fallback
 test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_cli_failure_reads_unreachable_not_gone
 test_no_run_herdr_alive_with_failed_read_stays_live
 test_no_run_herdr_husk_dead_still_reads_gone
+test_no_run_herdr_cortex_husk_answer_reads_unreachable_not_gone
+test_no_run_herdr_husk_verdict_is_harness_scoped
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log

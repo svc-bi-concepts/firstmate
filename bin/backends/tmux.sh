@@ -175,7 +175,15 @@ fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
     # omp (Oh My Pi) is anchored for the same reason as muse: its live process
     # name is the bare word `omp` (verified, omp 18.1.11) and a glob would claim
     # unrelated commands such as ompd or comp.
-    *claude*|*codex*|*opencode*|*grok*|*kimi*|*rovo*|pi|pi-signed|pi-launcher|Pi|omp) printf 'agent' ;;
+    #
+    # cortex needs its own arm because the neighbouring `*codex*` glob does NOT
+    # cover it - the two names differ by one letter - and it is anchored because
+    # its live process name is the bare word `cortex` (verified, Cortex Code
+    # v1.1.84, which reports comm=cortex) while a *cortex* glob would claim
+    # cortexd or cortex-helper. Without the arm a live cortex pane classifies
+    # `other`, the composed verdict is `ambiguous`, and every fm-control verb
+    # refuses the worker it can no longer see.
+    *claude*|*codex*|*opencode*|*grok*|*kimi*|*rovo*|pi|pi-signed|pi-launcher|Pi|omp|cortex) printf 'agent' ;;
     zsh|bash|sh|dash|ash|ksh|mksh|tcsh|csh|fish) printf 'shell' ;;
     *)
       if fm_harness_path_name "$path" >/dev/null || fm_harness_path_name "$argv0" >/dev/null; then

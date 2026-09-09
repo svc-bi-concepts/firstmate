@@ -104,6 +104,13 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# The control-plane capability tables, sourced ONLY for fm_control_harness_family:
+# the degraded-path endpoint read below must name this task's verified harness
+# family so a backend blind to that harness cannot be misread as a dead agent.
+# It is a pure contract with no side effects, runs no backend command, and reads
+# no state.
+# shellcheck source=bin/fm-control-lib.sh
+. "$SCRIPT_DIR/fm-control-lib.sh"
 
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
@@ -771,8 +778,10 @@ if ! pane_readable "$BACKEND_TARGET"; then
   #             genuine server death - a socket-connection failure is NOT
   #             covered by the unknown-never-death rule above).
   #   dead    - the endpoint exists but confidently has no agent (herdr's agent
-  #             get answered agent_not_found; tmux's readable foreground process
-  #             group is nothing but shells), still positive death evidence.
+  #             get answered agent_not_found for a harness its own build
+  #             integrates with, which is why this task's verified harness
+  #             family is passed in; tmux's readable foreground process group is
+  #             nothing but shells), still positive death evidence.
   #   alive   - the endpoint and its agent answered and only the heavy
   #             scrollback read failed, so the live state is classified by the
   #             normal flow below instead of being discarded.
@@ -781,7 +790,8 @@ if ! pane_readable "$BACKEND_TARGET"; then
   # Backends with no classifier (orca, zellij, and cmux all report unverified)
   # keep their historical capture-failure-means-gone reading.
   case "$TASK_BACKEND" in
-    tmux|herdr) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
+    tmux|herdr) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET" \
+      "$(fm_control_harness_family "$HARNESS" 2>/dev/null || true)") ;;
     *) AGENT_STATE=none ;;
   esac
   case "$TASK_BACKEND:$AGENT_STATE" in

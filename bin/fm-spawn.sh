@@ -124,7 +124,7 @@
 #   profile consultation. A --secondmate spawn is exempt and resolves the SECONDMATE
 #   harness (config/secondmate-harness -> config/crew-harness -> own), so the
 #   secondmate-vs-crewmate split is DURABLE across every respawn (recovery,
-#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+#   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|cortex)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
 #   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
@@ -260,6 +260,7 @@
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
 #     __GEMINISETTINGS__ firstmate-owned per-task gemini settings file (busy-state hooks)
 #     __ROVOBIN__   resolved, rovo-verified executable for a rovo launch
+#     __CORTEXBIN__ resolved, cortex-verified executable for a cortex launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
 # Kimi uses one surgically installed Firstmate region in $HOME/.kimi-code/config.toml,
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
@@ -275,6 +276,17 @@
 # only after a TUI readiness gate, then a delivery-confirmation gate - the same
 # launch-then-send shape as kimi. Its busy state is a screen-scrape fallback like
 # grok. rovo is crewmate/scout only and is refused for --secondmate, like muse.
+# cortex installs its busy-state and turn-end hooks into the WORKTREE at
+# .cortex/settings.local.json, the same local settings tier claude uses, because
+# cortex's hook loader reads only a fixed path set (its own hooks.json plus
+# ~/.claude, ~/.cortex, and the worktree's .claude/.cortex settings) and its
+# --config settings file is NOT one of them. The written file is git-excluded, but
+# unlike claude's it is NOT in bin/fm-teardown.sh's enumerated pool-return
+# cleanup, so on a POOLED worktree it survives the reset and its Stop hook can
+# still touch a retired task's turn-end file; a disposable worktree is deleted
+# outright and is unaffected. Adding it there is tracked in
+# docs/verification/cortex.md. cortex is crewmate/scout only and is refused for
+# --secondmate, like muse, gemini, and rovo.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
 # workspace path cursor records in .workspace-trusted, and the conversations that
@@ -1280,12 +1292,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: backend '$BACKEND' has no recovery-grade agent-state classifier, so a relaunch cannot prove the previous agent exited; refusing rather than risking two agents in one endpoint" >&2
     exit 1
   }
-  RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET")
+  RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  RELAUNCH_STATE=$(fm_backend_agent_state "$BACKEND" "$RELAUNCH_TARGET" \
+    "$(fm_control_harness_family "$RELAUNCH_PRIOR_HARNESS" 2>/dev/null || true)")
   [ "$RELAUNCH_STATE" = dead ] || {
     echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
     exit 1
   }
-  RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -1324,7 +1337,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
 elif [ "$KIND" = secondmate ]; then
   case "${POS[1]:-}" in
-    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    ''|claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|cortex)
       ARG3=${POS[1]:-}
       ;;
     *' '*)
@@ -1582,6 +1595,36 @@ launch_template() {
     # when a supported effort is requested, since a second --config-override
     # would silently discard the first (confirmed live).
     rovo) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __ROVOBIN__ run --yolo __MODELFLAG____ROVOCONFIGOVERRIDE__' ;;
+    # cortex (Snowflake Cortex Code): a positional message is the session's
+    # initial prompt and auto-submits, so the brief rides the launch command
+    # exactly as it does for claude, grok, and gemini (verified live on Cortex
+    # Code v1.1.84: a positional brief launched, submitted itself with no extra
+    # Enter, and the worker completed a real file write). It is deliberately NOT
+    # the kimi/rovo launch-then-send shape; that was tested for and not needed.
+    # --bypass (alias --dangerously-allow-all-tool-calls) auto-approves every
+    # tool call, which an unattended crewmate needs, and it is also what keeps a
+    # fresh per-task worktree from meeting cortex's own project-trust dialog:
+    # three live launches in a never-trusted directory showed no dialog and left
+    # ~/.snowflake/cortex/cortex.json's trusted-project list untouched.
+    # --auto-accept-plans clears the plan-mode confirmation that would otherwise
+    # park an unattended worker.
+    # --no-auto-update is deliberately NOT passed. It cannot deliver the
+    # version pinning it looks like it delivers: it suppresses the launch-time
+    # update only, so it never prevents the mid-session swap that is the actual
+    # hazard, while it does permanently keep every crewmate on whatever build
+    # the host happens to carry, declining upstream fixes indefinitely.
+    # No connection or model default is passed: the operator's own
+    # ~/.snowflake/cortex/settings.json supplies cortexAgentConnectionName and
+    # its model, and __MODELFLAG__ overrides the latter only when a dispatch
+    # profile or captain override names one.
+    # cortex does NOT scrub an inherited CLAUDECODE, so foreign primary markers
+    # are cleared here as defense in depth alongside the marker ordering in
+    # bin/fm-harness.sh; CURSOR_AGENT/CURSOR_INVOKED_AS/GEMINI_CLI are cleared by
+    # the shared outer wrap below, like every other non-cursor harness.
+    # Its busy-state and turn-end signals do NOT ride the launch command: they
+    # are hooks written into the worktree below, because cortex's hook loader
+    # reads a fixed set of settings paths and its --config file is not one of them.
+    cortex) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __CORTEXBIN__ --bypass --auto-accept-plans __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -1623,27 +1666,27 @@ case "$ARG3" in
     ;;
 esac
 
-# muse and gemini are verified as CREWMATE/SCOUT adapters only. A secondmate is
-# a firstmate instance, so it needs a primary supervision protocol.
-# gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
-# and this task verified only crewmate-side launch, busy state, interrupt, and
-# exit, so a gemini secondmate is refused rather than stood up on an unverified
-# supervision path. muse has none either, and its
-# Claude-compatible hook dialect explicitly rejects the model-reawakening and
-# asyncRewake handlers that firstmate's primary turn-end supervision is built on
-# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
-# secondmate whose supervision cycle could never be armed.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ]; }; then
+# Some verified adapters are CREWMATE/SCOUT only. A secondmate is a firstmate
+# instance, so it needs a primary supervision protocol, and these have none:
+# gemini - docs/supervision-protocols/ carries no gemini wake protocol and this
+#   task verified only crewmate-side launch, busy state, interrupt, and exit, so
+#   a gemini secondmate would be stood up on an unverified supervision path.
+# muse - its Claude-compatible hook dialect explicitly rejects the
+#   model-reawakening and asyncRewake handlers that firstmate's primary turn-end
+#   supervision is built on (muse 0.1.0-R708.1).
+# rovo - no turn-end hook and no verified primary integration, so a secondmate
+#   that must itself act as a primary could never be supervised.
+# cortex - no wake protocol and no turn-end guard adapter. Its crewmate turn-end
+#   hook does NOT close that gap: a primary also needs the session-start nudge,
+#   the pre-tool arm guard, and a watcher continuity owner.
+# bin/fm-control-lib.sh's fm_control_harness_supports_kind is the single owner of
+# which adapter runs which kind, so the list is read from there rather than
+# restated here. The fm_control_harness_supported test in front of it is what
+# keeps the raw-launch escape hatch open: that helper reports nonzero for ANY
+# unverified adapter, and an unverified secondmate is deliberately permitted.
+if [ "$KIND" = secondmate ] && fm_control_harness_supported "$HARNESS" \
+  && ! fm_control_harness_supports_kind "$HARNESS" secondmate; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# rovo carries the same primary-supervision gap as muse: no turn-end hook, no
-# verified primary integration, so a secondmate (a firstmate instance that must
-# itself act as a primary) could never be supervised. Refuse loudly rather than
-# standing one up with no way to arm its watch cycle.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
-  echo "error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
 
@@ -1770,6 +1813,30 @@ resolve_muse_binary() {
   return 1
 }
 
+resolve_cortex_binary() {
+  local candidate dir fallback
+  candidate=$(command -v cortex 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    case "$candidate" in
+      /*) printf '%s\n' "$candidate"; return 0 ;;
+      *)
+        dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || dir=
+        if [ -n "$dir" ]; then
+          printf '%s/%s\n' "$dir" "$(basename "$candidate")"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+  fallback="${HOME:-}/.local/bin/cortex"
+  if [ -n "${HOME:-}" ] && [ -x "$fallback" ]; then
+    printf '%s\n' "$fallback"
+    return 0
+  fi
+  echo "error: cortex executable not found; searched PATH for 'cortex' and fallback '$fallback'" >&2
+  return 1
+}
+
 resolve_rovo_binary() {
   local candidate dir fallback
   candidate=$(command -v rovo 2>/dev/null || true)
@@ -1834,7 +1901,7 @@ model_flag_for_harness() {
   local harness=$1 model=$2
   [ -n "$model" ] && [ "$model" != default ] || return 0
   case "$harness" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp)
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|cortex)
       printf -- '--model %s ' "$(shell_quote "$model")"
       ;;
   esac
@@ -1898,6 +1965,18 @@ effort_flag_for_harness() {
         max) printf -- '--reasoning-effort %s ' "$(shell_quote ultra)" ;;
       esac
       ;;
+    cortex)
+      # Cortex Code v1.1.84 --effort accepts minimal|low|medium|high|max. It has
+      # no xhigh, so references/common/model-and-effort.md's cap rule applies:
+      # xhigh maps onto cortex's highest supported non-max level rather than
+      # being silently omitted. minimal sits below firstmate's shared vocabulary
+      # and is deliberately unreachable rather than remapped onto low, the same
+      # choice muse's none/minimal already made.
+      case "$effort" in
+        low|medium|high|max) printf -- '--effort %s ' "$(shell_quote "$effort")" ;;
+        xhigh) printf -- '--effort %s ' "$(shell_quote high)" ;;
+      esac
+      ;;
     # rovo has no --effort flag on `run`; its effort mapping rides
     # --config-override, but that flag is single-value (see
     # rovo_config_override_flag below) so it is built there, merged with the
@@ -1949,6 +2028,13 @@ case "$LAUNCH" in
   *__ROVOBIN__*)
     ROVO_BIN=$(resolve_rovo_binary) || exit 1
     LAUNCH=${LAUNCH//__ROVOBIN__/$(shell_quote "$ROVO_BIN")}
+    ;;
+esac
+
+case "$LAUNCH" in
+  *__CORTEXBIN__*)
+    CORTEX_BIN=$(resolve_cortex_binary) || exit 1
+    LAUNCH=${LAUNCH//__CORTEXBIN__/$(shell_quote "$CORTEX_BIN")}
     ;;
 esac
 
@@ -2492,6 +2578,7 @@ herdr_projection_meta_field_exact() {  # <meta> <key>
 # Exact Herdr fields are retained for the narrower version 2 reclaim path.
 herdr_projection_existing_meta_allows_flat() {  # <meta>
   local meta=$1 old_backend old_target old_session old_pane old_state target_session target_pane
+  local old_harness
   HERDR_RECOVERY_BACKEND=""
   HERDR_RECOVERY_WORKSPACE_ID=""
   HERDR_RECOVERY_TAB_ID=""
@@ -2503,6 +2590,10 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
     return 1
   }
   HERDR_RECOVERY_BACKEND=$old_backend
+  # Both endpoint reads below ask about the agent RECORDED in this meta, so the
+  # harness family that makes them non-blind is that recording's own, never this
+  # spawn's - a relaunch may be carrying a different harness entirely.
+  old_harness=$(fm_control_harness_family "$(fm_meta_get "$meta" harness)" 2>/dev/null || true)
   if [ "$old_backend" = herdr ]; then
     fm_backend_herdr_parse_target "$old_target" || {
       echo "error: existing herdr endpoint for $ID is malformed; refusing duplicate launch" >&2
@@ -2535,7 +2626,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
     }
-    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane")
+    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane" "$old_harness")
     case "$old_state" in
       dead|no-agent) return 0 ;;
       live|unknown)
@@ -2544,7 +2635,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
         ;;
     esac
   fi
-  old_state=$(fm_backend_agent_alive "$old_backend" "$old_target")
+  old_state=$(fm_backend_agent_alive "$old_backend" "$old_target" "$old_harness")
   case "$old_state" in
     dead) return 0 ;;
     alive|unknown)
@@ -2776,7 +2867,8 @@ case "$BACKEND" in
       HERDR_SEEDED_DEFAULT_TAB_ID=${HERDR_CONTAINER_RAW#*$'\t'}
       HERDR_SES=${CONTAINER%%:*}
       HERDR_WORKSPACE_ID=${CONTAINER#*:}
-      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID") || exit 1
+      HERDR_TASK_IDS=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_create_task "$CONTAINER" "$W" "$PROJ_ABS" "$HERDR_SEEDED_DEFAULT_TAB_ID" \
+        "$(fm_control_harness_family "${HARNESS:-}" 2>/dev/null || true)") || exit 1
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
@@ -3187,7 +3279,7 @@ if [ "$KIND" != secondmate ]; then
       ;;
   esac
   case "$HARNESS" in
-    claude*|opencode*|pi|pi-signed|omp)
+    claude*|opencode*|pi|pi-signed|omp|cortex)
       BUSY_GEN=$("$FM_ROOT/bin/fm-busy-event.sh" arm "$STATE_REAL" "$ID") || {
         echo "error: failed to arm the busy-state contract for $ID" >&2
         exit 1
@@ -3270,6 +3362,45 @@ EOF
 {"hooks":{"BeforeAgent":[{"hooks":[{"type":"command","command":"$g_before"}]}],"AfterAgent":[{"hooks":[{"type":"command","command":"$g_after"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$g_sessionend"}]}]}}
 EOF
       fi
+      ;;
+    cortex)
+      # Semantic busy-state hooks (bin/fm-busy-lib.sh), Claude's event shape:
+      # UserPromptSubmit opens a turn; Stop (normal completion) and SessionEnd
+      # (process shutdown) close it, so an abnormal end can never leave a stale
+      # busy record. Verified live on Cortex Code v1.1.84 as a clean
+      # UserPromptSubmit -> Stop pair for a completed turn, and as a
+      # UserPromptSubmit -> SessionEnd pair when the turn was interrupted and the
+      # session then exited. There is NO StopFailure event (Claude's fourth
+      # hook), and cortex fires no hook at all for a manual Escape interrupt, so
+      # a cancelled cortex turn stays busy exactly as a cancelled claude turn
+      # does; fm-control preserves that adapter-owned state. SubagentStop is
+      # deliberately unwired: cortex runs subagents, so closing the turn on one
+      # would clear the worker's busy record while its own turn is still running.
+      #
+      # These go into the WORKTREE's .cortex/settings.local.json, not a
+      # firstmate-owned file under state/ reached through --config. That is not a
+      # preference: cortex's --config settings file is NOT one of the paths its
+      # hook loader reads. The loader's sources are its own
+      # <cortex-config-dir>/hooks.json plus settings.json under ~/.claude,
+      # ~/.cortex, <cwd>/.claude, and <cwd>/.cortex (with the .local variants) -
+      # verified live, where a --config file carrying these exact hooks produced
+      # no hook execution at all while the loader logged that it had loaded hooks
+      # from ~/.claude/settings.json instead. .cortex/settings.local.json is the
+      # highest-priority of those and the direct analogue of the
+      # .claude/settings.local.json this script already writes for claude; hook
+      # arrays merge across cortex's settings tiers, so a project's own hooks
+      # still run alongside these. The `.local.json` tier is by convention the
+      # gitignored one, and exclude_path keeps it out of the worktree's index.
+      mkdir -p "$WT/.cortex"
+      busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
+      busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source cortex-hook"
+      c_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit >/dev/null 2>&1 || true; printf '{}'")
+      c_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop >/dev/null 2>&1 || true; printf '{}'")
+      c_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end >/dev/null 2>&1 || true; printf '{}'")
+      cat > "$WT/.cortex/settings.local.json" <<EOF
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$c_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$c_stop"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$c_sessionend"}]}]}}
+EOF
+      exclude_path '.cortex/settings.local.json'
       ;;
     opencode*)
       mkdir -p "$WT/.opencode/plugins"
@@ -3776,7 +3907,7 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 case "$HARNESS" in
-  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo)
+  claude|codex|opencode|pi|pi-signed|grok|kimi|gemini|muse|rovo|cortex)
     LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI $LAUNCH"
     ;;
 esac

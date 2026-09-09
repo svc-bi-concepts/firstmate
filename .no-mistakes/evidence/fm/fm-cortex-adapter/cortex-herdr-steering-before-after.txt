@@ -1,0 +1,32 @@
+Steering a live cortex worker on Herdr - the defect the intent names, driven
+against the SAME running Cortex Code v1.1.84 scout, base commit vs this change.
+
+Endpoint: <lab-session>:w2:p2, a real cortex scout spawned by bin/fm-spawn.sh,
+demonstrably alive by pane read throughout (see cortex-herdr-live-pane.txt).
+
+=====================================================================
+BEFORE - base commit 9ba29db bin/fm-send.sh
+=====================================================================
+WARNING: watcher still down (same stale episode; last beat: 1128s ago, grace 300s) - full banner already printed this episode.
+fm-send: doorbell not typed because the agent in fm-lab-cx-live-16858-19923:w2:p2 has exited; the steer is durably recorded at /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/003.msg for recovery (stuck-crewmate-recovery), and the watcher will not re-ring a dead pane
+exit code: 0 (the record is durable; the instruction was never delivered)
+
+after 25s - proof file written by the worker?
+  no - the worker never learned anything was sent
+  inbox: 2 undelivered record(s) sitting unacknowledged
+
+=====================================================================
+AFTER - this change, bin/fm-send.sh, same live worker
+=====================================================================
+WARNING: watcher still down (same stale episode; last beat: 1164s ago, grace 300s) - full banner already printed this episode.
+exit code: 0, and no undelivered-doorbell notice on stderr
+
+waiting for the worker to act...
+  proof file written by the worker: AFTER-STEER-4
+  inbox now:
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled/001.msg
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled/002.msg
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled/003.msg
+    /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled/004.msg

@@ -1,0 +1,27 @@
+Naming cortex in the crew dispatch configuration - bin/fm-bootstrap.sh run the
+way a session start runs it, against an isolated FM_HOME.
+
+config/crew-dispatch.json:
+  {"rules":[{"when":"snowflake analysis work",
+             "use":{"harness":"cortex","model":"claude-sonnet-5","effort":"high"}}],
+   "default":{"harness":"cortex"}}
+
+BEFORE (base commit 9ba29db) - rejected as invalid at every session start:
+  CREW_DISPATCH: invalid config/crew-dispatch.json - unverified harness: cortex
+
+AFTER (this change) - accepted, bootstrap prints nothing:
+  <no CREW_DISPATCH diagnostic>
+
+Adversarial - an effort cortex cannot honour must be refused HERE, at
+configuration time, not silently dropped or discovered later at dispatch:
+  effort=minimal  -> CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:minimal
+  effort=hgih     -> CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:hgih
+  effort=ultra    -> CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:ultra
+  effort=turbo    -> CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:turbo
+
+and every effort cortex DOES honour stays accepted:
+  effort=low      -> accepted
+  effort=medium   -> accepted
+  effort=high     -> accepted
+  effort=xhigh    -> accepted
+  effort=max      -> accepted

@@ -1,0 +1,48 @@
+Full cortex lifecycle on the tmux backend, driven end to end against a real
+Cortex Code v1.1.84 worker in an isolated tmux server.
+
+--- bin/fm-spawn.sh --scout --harness cortex --backend tmux ----------
+  spawned cxtmux2 harness=cortex kind=scout window=firstmate:fm-cxtmux2 worktree=/Users/blarxfj/.treehouse/live-proj-3399c0/4/live-proj
+
+--- the live worker at its composer (tmux capture-pane) ------------
+    Other projects retain their own instructions unchanged.
+  
+  * Standing by at the composer. No work started - waiting for instructions.
+  
+   › MCP server '21st-dev-magic' failed to connect (ctrl+o to expand)
+  
+  ╭─────────────────────────────────────────────────────────────── New Session ──╮
+  │ › Plans will be auto accepted (/auto-accept-plan-off to disable)             │
+  ╰──────────────────────────────────────────────────────────────────────────────╯
+  
+  >> bypass safeguards  |  plan: off (auto)                             ⧉ AHUCK_SE
+  view: compact • ? for help
+  
+  
+
+--- pane classification of that same live pane ----------------------
+  BEFORE (base commit tmux classifier): ambiguous   <- every bin/fm-control.sh verb refused a worker it could not see
+  AFTER  (this change)                : alive
+--- bin/fm-control.sh cxtmux2 interrupt -----------------------------
+  interrupt-delivered cxtmux2 harness=cortex backend=tmux verified=agent-alive cancel=unconfirmed
+
+--- bin/fm-control.sh cxtmux2 exit ----------------------------------
+  stopped cxtmux2 harness=cortex backend=tmux endpoint=firstmate:fm-cxtmux2 worktree=/Users/blarxfj/.treehouse/live-proj-3399c0/4/live-proj
+
+--- the pane after the exit: cortex's own session-summary card ------
+  ╭── * Session Summary ──────────────────────────────────────────╮
+  │                                                               │
+  │ ◆⁣FIRSTMATE_OP: v1 launch-brief: # Task ## Captain's inten... │
+  │                                                               │
+  │                                                               │
+  │ ◆ Duration 34s                                                │
+  │                                                               │
+  │ ◆ Resume Session                                              │
+  │    cortex --resume f8584b13-8e1a-483e-8e1e-2fd6289dd08e       │
+  │    cortex --resume last                                       │
+  │                                                               │
+  ╰───────────────────────────────────────────────────────────────╯
+  live-proj on  HEAD 38s
+  ❯
+
+  agent state after exit: dead

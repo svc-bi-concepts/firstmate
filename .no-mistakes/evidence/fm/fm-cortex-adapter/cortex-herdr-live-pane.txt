@@ -1,0 +1,63 @@
+Live Herdr pane w2:p2 - the real Cortex Code v1.1.84 scout spawned by bin/fm-spawn.sh,
+after bin/fm-send.sh delivered the steering instruction it acted on.
+Session: fm-lab-cx-live-16858-19923 (isolated fm-lab, provisioned via bin/fm-herdr-lab.sh)
+----------------------------------------------------------------------
+
+  ## Firstmate spec
+  Live adapter probe for task cxlive1. Do nothing until a steering instruction arrives in your
+   inbox.
+
+  # Current worker role contract
+  When this task works on Firstmate itself, this section supersedes every earlier brief
+  instruction about your role and identity.
+  When this task works on Firstmate itself, the repository root `AGENTS.md` (also imported by
+  `CLAUDE.md`) is the primary/secondmate supervisor's contract: follow this brief instead of
+  that supervisor contract.
+  For that Firstmate task, do the assigned work yourself and report to firstmate; do not adopt
+   the supervisor identity, delegate the task, run fleet supervision, or address the captain.
+  This exception preserves this brief's safety and authority boundaries and applicable
+  contributor guidance, including `CONTRIBUTING.md` and `firstmate-coding-guidelines` for
+  Firstmate changes.
+  Other projects retain their own instructions unchanged.
+
+* I'm holding at the composer. No work started - waiting for a steering instruction to arrive
+  in my inbox.
+
+ › MCP server '21st-dev-magic' failed to connect (ctrl+o to expand)
+
+> : Firstmate instruction waiting: list
+  '/tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox'/*.msg and, in numeric order, read and
+  act on each, then mv each handled file to
+  '/tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox'/handled/.
+
+* I'll check the inbox for pending messages.
+
+✓  BASH  (List inbox message files)
+  ├─ ls -1 /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/*.msg 2>/dev/null
+  └─ ... (1 more line)
+
+✓  READ  /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/001.msg 4 lines
+
+✓  WRITE  /tmp/cxlive1-steer-proof.txt +2
+
+✓  BASH  (Write exact text without trailing newline)
+  ├─ printf 'STEER-RECEIVED' > /tmp/cxlive1-steer-proof.txt && od -c /tmp/cxlive1-steer-proof…
+  └─ ... (2 more lines)
+
+✓  BASH  (Move handled message into handled dir)
+  ├─ mkdir -p /tmp/cx-live.H2Cb0h/live-home/state/cxlive1.inbox/handled && mv /tmp/cx-live.H2…
+  └─ ... (1 more line)
+
+* Handled 001.msg: wrote the exact text STEER-RECEIVED (14 bytes, no trailing newline) to
+  /tmp/cxlive1-steer-proof.txt and moved the message to handled/. Inbox is now empty - back to
+   idle at the composer.
+
+Recap: The live adapter probe task is active and has processed its initial steering
+instruction. I am now waiting at the composer for the next instruction to arrive in the inbox.
+
+╭───────────────────────── FIRSTMATE_OP: v1 launch-brief: # Task ## Captain's intent S... ──╮
+│ › Plans will be auto accepted (/auto-accept-plan-off to disable)                           │
+╰────────────────────────────────────────────────────────────────────────────────────────────╯
+
+>> bypass safeguards  |  teams: off  |  plan: off (auto)                            ⧉ AHUCK_SE
+view: compact (ctrl+o to cycle) • ? for help

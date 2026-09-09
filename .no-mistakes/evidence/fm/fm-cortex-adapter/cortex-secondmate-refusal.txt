@@ -1,0 +1,13 @@
+The consolidated secondmate refusal (this change folded three sequential
+per-harness blocks into one). Driven through bin/fm-spawn.sh; the refusal must
+be unchanged for every adapter it already covered, and must not over-refuse a
+secondmate-capable one.
+
+  --secondmate --harness cortex  -> error: cortex is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.
+  --secondmate --harness muse    -> error: muse is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.
+  --secondmate --harness gemini  -> error: gemini is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.
+  --secondmate --harness rovo    -> error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates.
+
+  control - a secondmate-capable adapter is NOT refused by that guard:
+  --secondmate --harness claude  -> error: no firstmate home supplied or registered for sm-claude
+  (it fails later on an unrelated missing home, not on the adapter guard)

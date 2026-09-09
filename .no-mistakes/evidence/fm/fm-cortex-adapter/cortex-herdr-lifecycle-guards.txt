@@ -1,0 +1,23 @@
+Lifecycle guards against the SAME live Cortex Code worker on Herdr.
+Every command below ran while the worker was demonstrably running.
+
+--- bin/fm-control.sh <id> exit -------------------------------------
+must refuse, never report a false already-stopped:
+  error: task cxlive1's endpoint reads 'unreadable' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint
+
+--- bin/fm-spawn.sh --relaunch <id> ---------------------------------
+must refuse rather than start a SECOND agent in the running worker's
+pane and worktree:
+  error: task cxlive1's endpoint reads 'unreadable'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh cxlive1 exit)
+  panes in the cortex workspace afterwards (still exactly one):
+    {"pane_id":"w2:p2","tab_id":"w2:t2"}
+
+--- bin/fm-crew-state.sh <id>, degraded path -------------------------
+pane capture failing (the load condition the fallback exists for), on the
+same live worker:
+  BEFORE (base commit): state: unknown · source: none · backend target gone: fm-lab-cx-live-16858-19923:w2:p2 (agent gone, pane shell remains)
+  AFTER  (this change): state: unknown · source: none · backend unreachable (herdr endpoint state: unreadable)
+
+  same degraded read for the live CLAUDE worker must not move:
+    BEFORE: state: working · source: pane · harness busy (fm-spawn)
+    AFTER : state: working · source: pane · harness busy (fm-spawn)

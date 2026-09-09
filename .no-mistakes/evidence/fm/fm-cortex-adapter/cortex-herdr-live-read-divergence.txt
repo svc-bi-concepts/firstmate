@@ -1,0 +1,26 @@
+Live divergence table - real Herdr 0.8.2 server, isolated fm-lab session,
+with a REAL Cortex Code v1.1.84 scout and a REAL claude scout running side by
+side (both spawned by bin/fm-spawn.sh) plus one agent-free shell pane.
+
+Herdr's own view of the live cortex worker:
+{"error":{"code":"agent_not_found","message":"agent target w2:p2 not found"},"id":"cli:agent:get"}
+  (herdr's installed build ships no cortex integration, so agent_not_found
+   is what a LIVE cortex pane answers, exactly like an empty one)
+
+[{"agent":"claude","agent_status":"blocked","cwd":"/private/tmp/cx-live.H2Cb0h/live-proj","focused":false,"foreground_cwd":"/Users/blarxfj/.treehouse/live-proj-3399c0/2/live-proj","pane_id":"w3:p2","revision":0,"state_change_seq":1,"tab_id":"w3:t2","terminal_id":"term_65b101f6936c76","workspace_id":"w3"}]
+  (the claude worker in the same session IS registered; cortex is absent)
+
+firstmate's reads on those same live panes:
+----------------------------------------------------------------------
+  cortex worker, no harness arg                -> dead        <- the hazard
+  cortex worker, harness=cortex                -> unreadable  <- the guard
+  claude worker, no harness arg                -> alive
+  claude worker, harness=claude                -> alive
+  agent-free shell, no harness arg             -> dead
+  agent-free shell, harness=claude             -> dead
+  agent-free shell, harness=rovo               -> dead
+
+  tab_is_husk cortex pane, no harness          -> HUSK - would close the live worker
+  tab_is_husk cortex pane, cortex              -> refused
+  agent_alive cortex pane, no harness          -> dead
+  agent_alive cortex pane, cortex              -> unknown

@@ -152,6 +152,27 @@ A fix would change the fleet-wide shared classifier, so it is left unmade rather
 The consequence matches rovo's already-accepted composer gap and is bounded to composer-emptiness consumers: steering still lands, because `bin/fm-task-inbox-lib.sh` rings on every verdict except a proven `pending`.
 The launch is unaffected, since the positional brief needs no readiness gate.
 
+## Backend liveness: the tmux arm
+
+`bin/backends/tmux.sh`'s `fm_backend_tmux_classify_process_name` gained an anchored `cortex` arm, and `FM_HARNESS_RE`/`FM_HARNESS_NAMES` in `bin/fm-session-lock-lib.sh` gained the same name.
+The arm is needed because the neighbouring `*codex*` glob does not cover `cortex` - the two names differ by one letter - and it is anchored rather than a `*cortex*` glob so `cortexd` and `cortex-helper` cannot claim the identity.
+Without it a live cortex pane classified `other`, the composed verdict was `ambiguous`, and every `bin/fm-control.sh` verb refused the worker it could no longer see.
+Adding a literal name to those lists can only change the outcome for a process actually named `cortex`, so no other harness's classification moves; `tests/fm-cortex-harness.test.sh` asserts both directions against a faked process name.
+
+## Decided but not included
+
+These were raised by review on this branch and decided, but are not in this change; they are the accurate starting point for the follow-up.
+
+- Remove `--no-auto-update` from the cortex launch template, its comment rationale, and the test line that pins it.
+- Remove `.cortex/settings.local.json` in `bin/fm-teardown.sh`'s pool-worktree cleanup, beside the `.claude`, `.opencode`, grok, and kimi artifacts.
+- Replace the raw `grep` over `.git/info/exclude` in `tests/fm-cortex-harness.test.sh` with `git check-ignore`, this repo's own idiom.
+- Add cortex to the operator-facing "Harness support" section of `docs/configuration.md`.
+- Fix the link label and target disagreement at the top of this file.
+- Add cortex to `crew_dispatch_validate`'s verified list in `bin/fm-bootstrap.sh`.
+  Until that lands, cortex is dispatchable by explicit per-spawn choice only, NOT through `config/crew-dispatch.json`: an operator naming cortex in a dispatch profile gets an actionable `CREW_DISPATCH: invalid` diagnostic every session start.
+- Remove the `${HOME:-}/.local/bin/cortex` fallback from `resolve_cortex_binary`, leaving the PATH lookup, matching `resolve_muse_binary`.
+- Remove the second detection marker arm `CORTEX_TASK_CONTEXT_ID`, since the two variables were only ever observed together and `bin/fm-harness.sh` returning `unknown` is a safe stop-and-ask failure mode.
+
 ## Not verified
 
 - Primary and secondmate use.

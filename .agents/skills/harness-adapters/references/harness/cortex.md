@@ -93,6 +93,23 @@ Steering still lands - `../../../../../bin/fm-task-inbox-lib.sh` rings on every 
 The launch is unaffected because the positional brief needs no readiness gate.
 A fix belongs with a real backend capture and its own regression, not inside this adapter.
 
+## Backend support, and what lifecycle control actually buys you
+
+`bin/backends/tmux.sh`'s process classifier carries an anchored `cortex` arm, so a cortex pane on the verified reference backend reads as a live agent and every `bin/fm-control.sh` verb works there.
+The neighbouring `*codex*` glob does NOT cover `cortex`; without its own arm a live pane classified `other` and every verb refused.
+
+Herdr is different and the difference is load-bearing.
+Herdr's installed build ships no cortex integration, so `herdr agent get` answers `agent_not_found` for a LIVE cortex pane exactly as it does for an empty one.
+`fm_backend_herdr_pane_agent_state` therefore resolves that response to `unknown` for cortex ONLY, so the three paths that need positive agent-free proof refuse instead of acting on a blind read: `exit` cannot report a false `already-stopped`, `--relaunch` cannot clear its agent-free guard and start a second agent in the same pane, and a same-label respawn cannot close a live tab as a husk.
+That refusal is the safe behaviour, not working control: on Herdr, cortex has no lifecycle control until Herdr ships cortex detection.
+The scoping is asserted against a canned Herdr CLI in `../../../../../tests/fm-cortex-harness.test.sh`, never against a live Herdr server, because none was installed on the verification host.
+
+## Not yet wired
+
+Dispatch profiles do not accept cortex yet: it is absent from `crew_dispatch_validate`'s verified list, so naming it in `config/crew-dispatch.json` produces an actionable `CREW_DISPATCH: invalid` diagnostic every session start.
+Dispatch cortex by explicit per-spawn choice until that lands.
+`../../../../../docs/verification/cortex.md` under "Decided but not included" owns the full follow-up list.
+
 ## Primary integration
 
 Unsupported and unverified.

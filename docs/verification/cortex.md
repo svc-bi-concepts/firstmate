@@ -158,5 +158,10 @@ The launch is unaffected, since the positional brief needs no readiness gate.
   No cortex wake protocol, turn-end guard adapter, session-start nudge, or watcher-continuity owner exists, and `bin/fm-spawn.sh` refuses a cortex secondmate.
 - Behaviour under a firstmate session provider (tmux, Herdr, zellij, orca, cmux).
   Every interactive check here used a raw PTY.
+- Agent liveness on the Herdr backend, which is a known Herdr-side blind spot rather than an open question.
+  Herdr's installed build ships no cortex integration (`herdr integration status` lists none - the same enumeration recorded in [rovo.md](rovo.md) for rovo's identical gap), so `herdr agent get <pane>` answers `agent_not_found` for a LIVE cortex pane, exactly as it answers for an empty restored one.
+  Left unhandled that reads as a positively agent-free endpoint, and three recovery paths act on it: `bin/fm-control.sh` `exit` would report `already-stopped` and return 0 on a running worker, `bin/fm-spawn.sh --relaunch` would clear its agent-free guard and start a SECOND agent in the same pane and worktree, and `fm_backend_herdr_create_task` would close and replace a live tab on a same-label respawn.
+  Unlike rovo's gap, which is left unpatched, `fm_backend_herdr_pane_agent_state` now resolves `agent_not_found` to `unknown` for cortex only, so each of those paths refuses instead of acting on a read that cannot see the agent. That refusal is the verified-safe behaviour, not working lifecycle control: on the Herdr backend cortex has none until Herdr ships cortex detection.
+  Neither Herdr nor a non-Herdr provider was installed here, so this scoping is asserted by `tests/fm-cortex-harness.test.sh` against a canned Herdr CLI, never against a live server.
 - `cortex resume` and `--continue` as a recovery path.
   Firstmate relaunches deterministically from the brief on disk instead.

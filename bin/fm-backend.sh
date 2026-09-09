@@ -887,15 +887,19 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # Only `dead` and `missing` license recovery. The tmux adapter requires a
 # successful session inventory and returns `missing` only when it omits the
 # exact window; the Herdr adapter reuses its husk
-# classifier. Zellij remains unverified because its secondmate ghost-tab and
+# classifier, and takes the task's harness family as an optional third argument
+# because its agent read is blind to a harness herdr's own build does not
+# integrate with (bin/backends/herdr.sh's fm_backend_herdr_pane_agent_state owns
+# that rule). A caller with no harness in hand may omit it and gets today's
+# classification. Zellij remains unverified because its secondmate ghost-tab and
 # agent-process recovery path has not been empirically validated. Orca and cmux
 # do not support secondmate spawns.
-fm_backend_agent_state() {  # <backend> <target>
-  local backend=$1 target=$2
+fm_backend_agent_state() {  # <backend> <target> [harness]
+  local backend=$1 target=$2 harness=${3:-}
   fm_backend_source "$backend" || { printf 'unverified'; return 0; }
   case "$backend" in
     tmux) fm_backend_tmux_agent_state "$target" ;;
-    herdr) fm_backend_herdr_agent_state "$target" ;;
+    herdr) fm_backend_herdr_agent_state "$target" "$harness" ;;
     *) printf 'unverified' ;;
   esac
 }

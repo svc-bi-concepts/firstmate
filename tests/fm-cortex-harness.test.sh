@@ -25,6 +25,10 @@
 #      cortex's hook loader reads only a fixed path set.
 #   6. cortex is a crewmate/scout adapter only: its control mechanics are
 #      verified while a secondmate launch on it is refused.
+#   7. herdr's installed build has no cortex integration, so its agent read
+#      cannot see a cortex worker: agent_not_found is not evidence of absence
+#      for cortex, and reading it as one would let exit, --relaunch and the
+#      husk classifier act on a live worker. That scoping is cortex-only.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -168,6 +172,133 @@ test_cortex_pane_process_classifies_as_a_live_agent() {
   [ "$(fm_backend_tmux_classify_process_name bash)" = shell ] \
     || fail "an idle shell must still classify as a shell"
   pass "backends/tmux.sh: a cortex pane process classifies as a live agent and its near misses do not"
+}
+
+# make_herdr_agentless_fakebin: a canned `herdr` CLI whose pane structurally
+# exists while `agent get` answers agent_not_found for it. That is exactly what
+# the installed herdr build answers for a LIVE pane running a harness it has no
+# integration for, and it is indistinguishable from the same answer for a
+# genuinely empty restored pane.
+make_herdr_agentless_fakebin() {  # <dir> -> echoes fakebin dir
+  local fb="$1/fakebin"
+  mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-} ${2:-}" in
+  "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
+  "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
+  "agent get") printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/herdr"
+  printf '%s\n' "$fb"
+}
+
+herdr_backend_eval() {  # <fakebin> <expression>
+  PATH="$1:$PATH" bash -c ". \"\$0/bin/backends/herdr.sh\"; $2" "$ROOT"
+}
+
+test_cortex_herdr_agent_read_is_not_agent_free_proof() {
+  local fb out
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  mkdir -p "$TMP_ROOT/herdr-blind"
+  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-blind")
+
+  # For cortex the read proves nothing, so it must resolve to an unreadable
+  # endpoint rather than a positively agent-free one.
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1 cortex')
+  [ "$out" = unreadable ] \
+    || fail "a cortex pane herdr cannot see must read unreadable, got '$out'"
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_pane_agent_state fmtest w1:p1 cortex')
+  [ "$out" = unknown ] \
+    || fail "agent_not_found is not evidence of absence for cortex, got '$out'"
+
+  # Divergence: the SAME read for a harness herdr does integrate with, and for a
+  # caller that names no harness at all, must keep today's verdict exactly.
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1 claude')
+  [ "$out" = dead ] \
+    || fail "an agent-free claude pane must still read dead, got '$out'"
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1')
+  [ "$out" = dead ] \
+    || fail "a harness-less caller must keep the existing verdict, got '$out'"
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_pane_agent_state fmtest w1:p1 rovo')
+  [ "$out" = no-agent ] \
+    || fail "no other harness's classification may move, got '$out'"
+
+  # The husk classifier is the third guard: a cortex tab must never be a
+  # close-and-replace candidate on a read that cannot see its agent.
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_tab_is_husk fmtest w1:p1 cortex && echo husk || echo refused')
+  [ "$out" = refused ] || fail "a cortex tab must not be classified a husk, got '$out'"
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_tab_is_husk fmtest w1:p1 claude && echo husk || echo refused')
+  [ "$out" = husk ] || fail "an agent-free claude tab must still classify as a husk, got '$out'"
+  pass "backends/herdr.sh: an agent_not_found read is not agent-free proof for cortex alone"
+}
+
+test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
+  local fb dir home proj wt id=cx-herdr out status harness
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  dir="$TMP_ROOT/herdr-exit"
+  home="$dir/home"
+  proj="$dir/project"
+  wt="$dir/wt"
+  mkdir -p "$dir"
+  fb=$(make_herdr_agentless_fakebin "$dir")
+  fm_test_spawn_home "$home" cortex
+  fm_git_worktree "$proj" "$wt" "wt-herdr-exit"
+
+  write_herdr_meta() {  # <harness>
+    {
+      echo "window=fmtest:w1:p1"
+      echo "endpoint_task_id=$id"
+      echo "worktree=$wt"
+      echo "project=$proj"
+      echo "harness=$1"
+      echo "kind=ship"
+      echo "mode=no-mistakes"
+      echo "yolo=off"
+      echo "backend=herdr"
+      echo "herdr_session=fmtest"
+      echo "herdr_workspace_id=w1"
+      echo "herdr_tab_id=w1:t1"
+      echo "herdr_pane_id=w1:p1"
+    } > "$home/state/$id.meta"
+  }
+
+  # The whole consumer path: the recorded harness decides whether the Herdr read
+  # is trusted as proof that the worker already stopped.
+  for harness in cortex claude; do
+    write_herdr_meta "$harness"
+    out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_CONTROL_POLL=0.1 FM_CONTROL_EXIT_WAIT=1 \
+      "$ROOT/bin/fm-control.sh" "$id" exit 2>&1)
+    status=$?
+    if [ "$harness" = cortex ]; then
+      expect_code 1 "$status" "exit must refuse for a cortex task herdr cannot read: $out"
+      case "$out" in
+        *already-stopped*) fail "exit must never report already-stopped for a cortex worker herdr cannot see: $out" ;;
+      esac
+      assert_contains "$out" "unreadable" "the refusal must name the unattributed endpoint reading"
+    else
+      expect_code 0 "$status" "exit must still be idempotent success for an agent-free claude task: $out"
+      assert_contains "$out" "already-stopped" "an agent-free claude endpoint must still report already-stopped"
+    fi
+  done
+  pass "fm-control.sh: exit refuses a cortex herdr task instead of reporting a false already-stopped"
+
+  # The relaunch guard is the same read with the worse consequence: passing it
+  # starts a SECOND agent in the pane and worktree the first one is still in.
+  # Only a threaded harness can produce this refusal - untied, the read is
+  # `dead`, the guard passes silently, and there is no error to assert at all.
+  write_herdr_meta cortex
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" "$ROOT/bin/fm-spawn.sh" --relaunch "$id" 2>&1)
+  status=$?
+  expect_code 1 "$status" "a cortex relaunch must refuse on an endpoint herdr cannot read: $out"
+  assert_contains "$out" "positively agent-free endpoint" \
+    "the relaunch refusal must be the agent-free guard"
+  assert_contains "$out" "unreadable" \
+    "the relaunch guard must refuse on the unreadable cortex reading, not pass on a false dead"
+  pass "fm-spawn.sh: --relaunch refuses a cortex herdr endpoint rather than adding a second agent"
 }
 
 # --- control mechanics -------------------------------------------------------
@@ -457,6 +588,8 @@ test_cortex_marker_outranks_inherited_claudecode
 test_cortex_does_not_claim_configured_input_variables
 test_cortex_ancestry_matches_only_the_anchored_command_name
 test_cortex_pane_process_classifies_as_a_live_agent
+test_cortex_herdr_agent_read_is_not_agent_free_proof
+test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped
 test_cortex_control_mechanics_are_the_verified_ones
 test_cortex_and_codex_families_do_not_swallow_each_other
 test_cortex_is_crewmate_and_scout_only

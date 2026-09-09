@@ -1604,9 +1604,11 @@ launch_template() {
     # ~/.snowflake/cortex/cortex.json's trusted-project list untouched.
     # --auto-accept-plans clears the plan-mode confirmation that would otherwise
     # park an unattended worker.
-    # --no-auto-update pins the installed version for the life of the spawn:
-    # cortex auto-updates on launch by default, which would let a fleet swap the
-    # harness version its verified evidence is bound to, mid-flight and silently.
+    # --no-auto-update is deliberately NOT passed. It cannot deliver the
+    # version pinning it looks like it delivers: it suppresses the launch-time
+    # update only, so it never prevents the mid-session swap that is the actual
+    # hazard, while it does permanently keep every crewmate on whatever build
+    # the host happens to carry, declining upstream fixes indefinitely.
     # No connection or model default is passed: the operator's own
     # ~/.snowflake/cortex/settings.json supplies cortexAgentConnectionName and
     # its model, and __MODELFLAG__ overrides the latter only when a dispatch
@@ -1618,7 +1620,7 @@ launch_template() {
     # Its busy-state and turn-end signals do NOT ride the launch command: they
     # are hooks written into the worktree below, because cortex's hook loader
     # reads a fixed set of settings paths and its --config file is not one of them.
-    cortex) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __CORTEXBIN__ --bypass --auto-accept-plans --no-auto-update __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    cortex) printf '%s' 'env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS __CORTEXBIN__ --bypass --auto-accept-plans __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     *) return 1 ;;
   esac
 }
@@ -2582,6 +2584,7 @@ herdr_projection_meta_field_exact() {  # <meta> <key>
 # Exact Herdr fields are retained for the narrower version 2 reclaim path.
 herdr_projection_existing_meta_allows_flat() {  # <meta>
   local meta=$1 old_backend old_target old_session old_pane old_state target_session target_pane
+  local old_harness
   HERDR_RECOVERY_BACKEND=""
   HERDR_RECOVERY_WORKSPACE_ID=""
   HERDR_RECOVERY_TAB_ID=""
@@ -2593,6 +2596,10 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
     return 1
   }
   HERDR_RECOVERY_BACKEND=$old_backend
+  # Both endpoint reads below ask about the agent RECORDED in this meta, so the
+  # harness family that makes them non-blind is that recording's own, never this
+  # spawn's - a relaunch may be carrying a different harness entirely.
+  old_harness=$(fm_control_harness_family "$(fm_meta_get "$meta" harness)" 2>/dev/null || true)
   if [ "$old_backend" = herdr ]; then
     fm_backend_herdr_parse_target "$old_target" || {
       echo "error: existing herdr endpoint for $ID is malformed; refusing duplicate launch" >&2
@@ -2625,7 +2632,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
     }
-    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane")
+    old_state=$(fm_backend_herdr_pane_agent_state "$old_session" "$old_pane" "$old_harness")
     case "$old_state" in
       dead|no-agent) return 0 ;;
       live|unknown)
@@ -2634,7 +2641,7 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
         ;;
     esac
   fi
-  old_state=$(fm_backend_agent_alive "$old_backend" "$old_target")
+  old_state=$(fm_backend_agent_alive "$old_backend" "$old_target" "$old_harness")
   case "$old_state" in
     dead) return 0 ;;
     alive|unknown)

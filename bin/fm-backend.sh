@@ -907,8 +907,14 @@ fm_backend_agent_state() {  # <backend> <target> [harness]
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.
-fm_backend_agent_alive() {  # <backend> <target>
-  case "$(fm_backend_agent_state "$1" "$2")" in
+#
+# It forwards the same optional harness argument fm_backend_agent_state takes,
+# and for the same reason: without it, a backend blind to the task's harness
+# collapses a LIVE worker onto `dead` here too, and `dead` is the one value this
+# three-state view licenses action on. Omitting it keeps today's harness-blind
+# classification, so no existing caller changes behavior.
+fm_backend_agent_alive() {  # <backend> <target> [harness]
+  case "$(fm_backend_agent_state "$1" "$2" "${3:-}")" in
     alive) printf 'alive' ;;
     dead|missing) printf 'dead' ;;
     *) printf 'unknown' ;;

@@ -1,7 +1,7 @@
 # Cortex Code
 
 Snowflake's `cortex` TUI, verified end to end on 2026-09-09 with Cortex Code v1.1.84 on macOS (arm64).
-Launch shape: `cortex --bypass --auto-accept-plans --no-auto-update "$(<brief>)"`.
+Launch shape: `cortex --bypass --auto-accept-plans "$(<brief>)"`.
 Verified as a CREWMATE and SCOUT adapter only; `../../../../../bin/fm-spawn.sh` refuses a secondmate launch on it because `../../../../../docs/supervision-protocols/` carries no cortex wake protocol.
 
 ## Operating facts
@@ -32,8 +32,8 @@ A single quoted multi-line brief therefore arrives intact as one prompt.
 Confirmed live three times over a raw PTY: the brief submitted itself with no extra Enter, the worker ran a real bash tool call, and the file it was asked to write appeared on disk.
 `CORTEX_INITIAL_PROMPT_FILE` exists as an alternative but is deliberately unused - it is only the last fallback, and cortex DELETES the file it reads.
 
-`--no-auto-update` is passed because cortex auto-updates on launch by default.
-Leaving that on would let a spawn silently swap the harness version this reference's evidence is bound to, mid-flight.
+`--no-auto-update` is deliberately NOT passed, although cortex does auto-update on launch by default.
+It suppresses the launch-time update only, so it cannot prevent the mid-session swap that is the actual hazard, while its one durable effect is keeping every crewmate on whatever build the host carries and permanently declining upstream fixes.
 
 ## Hooks do not ride `--config`, and that is the whole design constraint
 
@@ -100,15 +100,19 @@ The neighbouring `*codex*` glob does NOT cover `cortex`; without its own arm a l
 
 Herdr is different and the difference is load-bearing.
 Herdr's installed build ships no cortex integration, so `herdr agent get` answers `agent_not_found` for a LIVE cortex pane exactly as it does for an empty one.
-`fm_backend_herdr_pane_agent_state` therefore resolves that response to `unknown` for cortex ONLY, so the three paths that need positive agent-free proof refuse instead of acting on a blind read: `exit` cannot report a false `already-stopped`, `--relaunch` cannot clear its agent-free guard and start a second agent in the same pane, and a same-label respawn cannot close a live tab as a husk.
-That refusal is the safe behaviour, not working control: on Herdr, cortex has no lifecycle control until Herdr ships cortex detection.
-The scoping is asserted against a canned Herdr CLI in `../../../../../tests/fm-cortex-harness.test.sh`, never against a live Herdr server, because none was installed on the verification host.
+`fm_backend_herdr_pane_agent_state` therefore resolves that response to `unknown` for cortex ONLY, so the paths that need positive agent-free proof refuse instead of acting on a blind read: `exit` cannot report a false `already-stopped`, `--relaunch` cannot clear its agent-free guard and start a second agent in the same pane, and a same-label respawn cannot close a live tab as a husk.
+That refusal is the safe behaviour, not working control: on Herdr, cortex has no lifecycle CONTROL until Herdr ships cortex detection.
 
-## Not yet wired
+Steering is the exception, and it is the reason the harness argument is threaded rather than passed at three call sites only.
+The doorbell's own endpoint pre-check reads the same blind response, but it is not a recovery path and it did not refuse safely: it silently declined to type, reported the worker as exited, and left the watcher escalating it as unavailable rather than re-ringing.
+A cortex worker on Herdr was therefore startable but never redirectable.
+`fm_task_inbox_ring` and `fm_backend_agent_alive` now take the same optional harness family the state read does, and every firstmate-side consumer passes it, so steering a cortex worker on Herdr works.
+Both the guard and the steering fix are verified against a REAL Herdr server with live cortex and claude workers, not only against a canned CLI - see `../../../../../docs/verification/cortex.md` under "Backend liveness: Herdr".
 
-Dispatch profiles do not accept cortex yet: it is absent from `crew_dispatch_validate`'s verified list, so naming it in `config/crew-dispatch.json` produces an actionable `CREW_DISPATCH: invalid` diagnostic every session start.
-Dispatch cortex by explicit per-spawn choice until that lands.
-`../../../../../docs/verification/cortex.md` under "Decided but not included" owns the full follow-up list.
+## Dispatch
+
+Dispatch profiles accept cortex: it is in `crew_dispatch_validate`'s verified list, so it can be named in `config/crew-dispatch.json` as well as chosen per spawn.
+`../../../../../docs/verification/cortex.md` under "Decided but not included" owns the remaining follow-up list; nothing on it blocks dispatching or supervising a cortex worker.
 
 ## Primary integration
 

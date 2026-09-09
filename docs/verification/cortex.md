@@ -13,8 +13,10 @@ The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.age
 | Platform | macOS arm64 (Darwin 25.3.0) |
 
 Every check below ran unsandboxed against the real binary on a live Snowflake connection.
-The tmux and Herdr session providers were both unavailable on the verification host, so the interactive checks were driven through a raw PTY rather than a firstmate backend.
-That bounds one finding only, recorded under "Composer" below.
+
+The first round's interactive checks were driven through a raw PTY, because neither tmux nor Herdr was installed on that host.
+Both providers were available for the second round, so the backend-liveness, lifecycle-guard, and steering findings below are now established against a real tmux session and a real Herdr 0.8.2 server with live workers.
+The raw-PTY bound survives for one finding only, recorded under "Composer" below.
 
 ## Detection
 
@@ -59,7 +61,7 @@ The final check ran the launch command `bin/fm-spawn.sh` itself rendered, with o
 ```
 env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
   env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT -u FM_PI_HARNESS \
-  '/Users/<user>/.local/bin/cortex' --bypass --auto-accept-plans --no-auto-update \
+  '/Users/<user>/.local/bin/cortex' --bypass --auto-accept-plans \
   "$('<root>/bin/fm-operational-input.sh' encode launch-brief < '<home>/data/cx-e2e/launch-brief.md')"
 ```
 
@@ -147,7 +149,7 @@ Cortex's empty composer renders a dim placeholder whose first cell the terminal 
 Under the adapter's own launch flags that placeholder is `Plans will be auto accepted (/auto-accept-plan-off to disable)`; without them it is `Type your message...` at rest and `Type to queue message...` while busy.
 None is in `FM_COMPOSER_IDLE_RE_DEFAULT`, so an idle cortex composer classifies `pending-unproven` rather than `empty`.
 
-This was measured from a raw PTY stream, not from a session provider's pane capture, because neither tmux nor a non-Herdr provider was installed on this host.
+This was measured from a raw PTY stream rather than from a session provider's pane capture, so the verdict a faithful capture produces is not established here; re-measuring it belongs with the fix.
 A fix would change the fleet-wide shared classifier, so it is left unmade rather than made against an unfaithful capture.
 The consequence matches rovo's already-accepted composer gap and is bounded to composer-emptiness consumers: steering still lands, because `bin/fm-task-inbox-lib.sh` rings on every verdict except a proven `pending`.
 The launch is unaffected, since the positional brief needs no readiness gate.
@@ -159,30 +161,123 @@ The arm is needed because the neighbouring `*codex*` glob does not cover `cortex
 Without it a live cortex pane classified `other`, the composed verdict was `ambiguous`, and every `bin/fm-control.sh` verb refused the worker it could no longer see.
 Adding a literal name to those lists can only change the outcome for a process actually named `cortex`, so no other harness's classification moves; `tests/fm-cortex-harness.test.sh` asserts both directions against a faked process name.
 
+## Backend liveness: Herdr, proven on a real server
+
+Herdr's installed build ships no cortex integration (`herdr integration status` lists none - the same enumeration recorded in [rovo.md](rovo.md) for rovo's identical gap), so `herdr agent get <pane>` answers `agent_not_found` for a LIVE cortex pane exactly as it answers for an empty restored one.
+
+This is no longer asserted only against a canned Herdr CLI.
+It was re-verified against a **real Herdr 0.8.2 server** with a real Cortex Code v1.1.84 worker and a real claude worker spawned into the same isolated lab session at the same moment, both idle at their composers and both demonstrably alive by pane read.
+Herdr saw one of them:
+
+```
+$ herdr agent list --session <lab>
+{"result":{"agents":[{"agent":"claude","agent_status":"idle","pane_id":"w2:p2",...}]}}   # cortex absent
+```
+
+### The guard, both directions
+
+```
+cortex  no harness arg   -> dead          <- the hazard, if a consumer is left unthreaded
+cortex  harness=cortex   -> unreadable    <- the guard
+claude  no harness arg   -> alive         <- no collateral damage to other harnesses
+claude  harness=claude   -> alive
+```
+
+The counterfactual is the important half, and it is equally clear on the live server.
+The husk classifier, run directly against the running cortex pane:
+
+```
+tab_is_husk no harness     -> 0  HUSK -> WOULD CLOSE THE LIVE WORKER
+tab_is_husk harness=cortex -> 1  refuse
+```
+
+and `bin/fm-control.sh ctx1 exit` refused rather than reporting a false `already-stopped`:
+
+```
+error: task ctx1's endpoint reads 'unreadable' rather than a positively classified
+state; refusing to send a lifecycle command into an unattributed endpoint
+```
+
+So on Herdr, cortex still has no lifecycle CONTROL - that is Herdr's detection gap to close - but every path that could act destructively on the blind read refuses instead.
+
+### Steering: the consumer that did not refuse safely
+
+An earlier revision of this file framed the blind spot as affecting exactly three RECOVERY paths and called their refusals "the verified-safe behaviour".
+That was incomplete in a way that mattered.
+The steering doorbell is a fourth consumer of the same read, it is not a recovery path, and it did not refuse safely.
+
+`fm_task_inbox_ring`'s endpoint pre-check resolved a live cortex worker to `dead`, so it silently declined to type, `bin/fm-send.sh` reported that the agent "has exited", and the watcher read the same blind state and escalated the worker as unavailable instead of re-ringing it - disabling the very ladder that exists to recover an undelivered steer.
+A cortex worker on a Herdr home was therefore **write-only**: startable, never redirectable.
+Every guarded lifecycle path failed loudly; this one failed quietly, which is why it survived the first round.
+
+The fix threads the same optional harness family already carried by `fm_backend_agent_state` through the remaining firstmate-side consumers: `fm_task_inbox_ring` and `fm_backend_agent_alive` now accept it, and `bin/fm-send.sh`, `bin/fm-watch.sh` (both its steer check and its paused-classification gates), and `bin/fm-spawn.sh`'s duplicate-launch guards all pass it.
+Omitting the argument still yields the previous harness-blind classification, so no existing caller changes behaviour.
+
+The three-state compatibility view gained the same argument, because `dead` is the one value it licenses action on.
+Read on the live server, with the worker running throughout - the harness-blind form is retained deliberately, so an old caller's verdict is unchanged:
+
+```
+fm_backend_agent_alive herdr <cortex-pane>          -> dead      <- harness-blind, unchanged
+fm_backend_agent_alive herdr <cortex-pane> cortex   -> unknown   <- honest, and no longer actionable
+fm_backend_agent_alive herdr <claude-pane> claude   -> alive     <- unaffected
+```
+
+Its consumers are `bin/fm-watch.sh`'s two paused-classification gates and `bin/fm-spawn.sh`'s duplicate-launch guard, all of which now pass the harness; `bin/fm-fleet-snapshot.sh` reads it for secondmates only, and cortex cannot be a secondmate, so no fleet view was affected.
+
+### The steering experiment, re-run live
+
+The same controlled side-by-side experiment that first exposed the defect, re-run against the fix: one cortex scout and one claude scout in one lab session, the identical `bin/fm-send.sh` command to each.
+
+**Both acted on it.** The cortex worker, which previously never learned anything had been sent:
+
+```
+Handled 001.msg: wrote STEER-RECEIVED to /tmp/ctx1-steer-proof.txt (verified) and moved the
+message to handled/. Inbox is empty; going idle at the composer awaiting the next steering
+instruction.
+```
+
+Proof files after the run: `cortex: STEER-RECEIVED`, `claude: STEER-RECEIVED`, and both `001.msg` records moved into their `handled/` directories - the acknowledgement move being the only real delivery signal.
+`bin/fm-send.sh` printed no undelivered-doorbell notice for either worker.
+
+All Herdr work ran in an isolated non-`default` lab session provisioned and torn down only through `bin/fm-herdr-lab.sh`, with the live `default` session recorded before the run and verified running and unchanged after teardown.
+
+`tests/fm-cortex-harness.test.sh` pins the divergence against a canned Herdr CLI in both directions: a cortex ring must not skip as dead and must actually type the doorbell, an agent-free claude ring must still skip with 3, and a harness-less ring must keep the existing verdict.
+
+## Landed since the first round
+
+Recorded because an earlier revision of this file listed these as pending, and a reader outside this fleet would otherwise plan around follow-up work that no longer exists.
+
+- **Lifecycle control is done**, not pending.
+  cortex is in `fm_control_harness_supported` (`bin/fm-control-lib.sh`) and its interrupt and exit mechanics are wired, with the full verb set verified end to end on tmux.
+  What is still missing is Herdr-side *detection*, which is Herdr's to ship - see "Backend liveness: Herdr" above - and not outstanding firstmate lifecycle work.
+- **Steering a cortex worker on Herdr is fixed and verified live.**
+  See "Backend liveness: Herdr"; this was the one silent failure in the set.
+- `--no-auto-update` removed from the launch template and its rationale corrected.
+  It cannot deliver the version pinning it appears to: it suppresses the launch-time update only, so it never prevents the mid-session swap that is the actual hazard, while its one durable effect is keeping every crewmate on whatever build the host happens to carry, declining upstream fixes indefinitely.
+- cortex added to `crew_dispatch_validate`'s verified list in `bin/fm-bootstrap.sh`, so it is dispatchable through `config/crew-dispatch.json` instead of producing an actionable `CREW_DISPATCH: invalid` diagnostic every session start.
+
 ## Decided but not included
 
 These were raised by review on this branch and decided, but are not in this change; they are the accurate starting point for the follow-up.
 
-- Remove `--no-auto-update` from the cortex launch template, its comment rationale, and the test line that pins it.
 - Remove `.cortex/settings.local.json` in `bin/fm-teardown.sh`'s pool-worktree cleanup, beside the `.claude`, `.opencode`, grok, and kimi artifacts.
 - Replace the raw `grep` over `.git/info/exclude` in `tests/fm-cortex-harness.test.sh` with `git check-ignore`, this repo's own idiom.
 - Add cortex to the operator-facing "Harness support" section of `docs/configuration.md`.
 - Fix the link label and target disagreement at the top of this file.
-- Add cortex to `crew_dispatch_validate`'s verified list in `bin/fm-bootstrap.sh`.
-  Until that lands, cortex is dispatchable by explicit per-spawn choice only, NOT through `config/crew-dispatch.json`: an operator naming cortex in a dispatch profile gets an actionable `CREW_DISPATCH: invalid` diagnostic every session start.
 - Remove the `${HOME:-}/.local/bin/cortex` fallback from `resolve_cortex_binary`, leaving the PATH lookup, matching `resolve_muse_binary`.
+  `resolve_rovo_binary` carries the identical fallback, so removing it from cortex alone leaves the two inconsistent; decide both together.
 - Remove the second detection marker arm `CORTEX_TASK_CONTEXT_ID`, since the two variables were only ever observed together and `bin/fm-harness.sh` returning `unknown` is a safe stop-and-ask failure mode.
+- The composer classification above, which is fleet-wide in `bin/fm-composer-lib.sh` and shared with rovo rather than specific to this adapter.
+  It needs a real pane capture, its own regression, and a decision taken across every affected harness at once.
+- Thread the harness family through `bin/fm-remote-secondmate-control.sh`'s two endpoint reads (its agent-state probe and its doorbell ring), the last consumers left harness-blind.
+  They are deliberately untouched here because they are reachable only for a SECONDMATE, and `bin/fm-spawn.sh` refuses a cortex secondmate, so no cortex worker can reach them.
+  They are worth closing when another harness Herdr cannot see becomes secondmate-capable.
 
 ## Not verified
 
 - Primary and secondmate use.
   No cortex wake protocol, turn-end guard adapter, session-start nudge, or watcher-continuity owner exists, and `bin/fm-spawn.sh` refuses a cortex secondmate.
-- Behaviour under a firstmate session provider (tmux, Herdr, zellij, orca, cmux).
-  Every interactive check here used a raw PTY.
-- Agent liveness on the Herdr backend, which is a known Herdr-side blind spot rather than an open question.
-  Herdr's installed build ships no cortex integration (`herdr integration status` lists none - the same enumeration recorded in [rovo.md](rovo.md) for rovo's identical gap), so `herdr agent get <pane>` answers `agent_not_found` for a LIVE cortex pane, exactly as it answers for an empty restored one.
-  Left unhandled that reads as a positively agent-free endpoint, and three recovery paths act on it: `bin/fm-control.sh` `exit` would report `already-stopped` and return 0 on a running worker, `bin/fm-spawn.sh --relaunch` would clear its agent-free guard and start a SECOND agent in the same pane and worktree, and `fm_backend_herdr_create_task` would close and replace a live tab on a same-label respawn.
-  Unlike rovo's gap, which is left unpatched, `fm_backend_herdr_pane_agent_state` now resolves `agent_not_found` to `unknown` for cortex only, so each of those paths refuses instead of acting on a read that cannot see the agent. That refusal is the verified-safe behaviour, not working lifecycle control: on the Herdr backend cortex has none until Herdr ships cortex detection.
-  Neither Herdr nor a non-Herdr provider was installed here, so this scoping is asserted by `tests/fm-cortex-harness.test.sh` against a canned Herdr CLI, never against a live server.
+- Behaviour under the zellij, orca, and cmux session providers.
+  tmux and Herdr are both covered above with live workers; the other three were not installed and are unexercised.
 - `cortex resume` and `--continue` as a recovery path.
   Firstmate relaunches deterministically from the brief on disk instead.

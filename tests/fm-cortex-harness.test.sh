@@ -29,6 +29,11 @@
 #      cannot see a cortex worker: agent_not_found is not evidence of absence
 #      for cortex, and reading it as one would let exit, --relaunch and the
 #      husk classifier act on a live worker. That scoping is cortex-only.
+#   8. The steering doorbell reads that same agent state, and it is the one
+#      consumer whose misread is SILENT rather than a refusal: unthreaded it
+#      never types and reports the worker exited, so a cortex worker on herdr
+#      is startable but unsteerable. Both it and fm_backend_agent_alive must
+#      keep the harness-blind verdict for a caller that names no harness.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -185,6 +190,10 @@ make_herdr_agentless_fakebin() {  # <dir> -> echoes fakebin dir
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
+# Every invocation is recorded when FM_TEST_HERDR_LOG names a file, so a test
+# can assert on what herdr was actually ASKED to do - in particular whether the
+# doorbell was ever typed - and not only on a return code.
+[ -z "${FM_TEST_HERDR_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_TEST_HERDR_LOG"
 case "${1:-} ${2:-}" in
   "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
@@ -198,6 +207,20 @@ SH
 
 herdr_backend_eval() {  # <fakebin> <expression>
   PATH="$1:$PATH" bash -c ". \"\$0/bin/backends/herdr.sh\"; $2" "$ROOT"
+}
+
+# The inbox library in a subshell with its state root pinned, mirroring
+# tests/fm-task-inbox.test.sh's own idiom. Sourced fresh per call so a ring
+# never inherits this suite's backend state.
+inbox_lib() {  # <state> <function> [args...]
+  local state=$1
+  shift
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fn=$2
+    shift 2
+    "$fn" "$@"
+  ' _ "$ROOT/bin/fm-task-inbox-lib.sh" "$@"
 }
 
 test_cortex_herdr_agent_read_is_not_agent_free_proof() {
@@ -299,6 +322,81 @@ test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
   assert_contains "$out" "unreadable" \
     "the relaunch guard must refuse on the unreadable cortex reading, not pass on a false dead"
   pass "fm-spawn.sh: --relaunch refuses a cortex herdr endpoint rather than adding a second agent"
+}
+
+# The steering doorbell is the FOURTH consumer of the same blind Herdr read,
+# and the only one whose failure is silent: the lifecycle guards all refuse out
+# loud, while an unthreaded ring simply never types and reports the worker
+# "exited". Both the defect and its fix were observed against a real Herdr
+# server with a live cortex worker; docs/verification/cortex.md under "Backend
+# liveness: Herdr" records that evidence. Before the fix a live cortex worker
+# read `dead`, fm_task_inbox_ring returned 3, the doorbell was never typed, and
+# the watcher escalated the worker as unavailable instead of re-ringing it -
+# leaving a cortex worker on Herdr startable but permanently unsteerable.
+test_cortex_herdr_steering_rings_instead_of_reporting_a_dead_pane() {
+  local fb dir state rec log rc
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  dir="$TMP_ROOT/herdr-steer"
+  state="$dir/state"
+  mkdir -p "$state"
+  fb=$(make_herdr_agentless_fakebin "$dir")
+  rec=$(inbox_lib "$state" fm_task_inbox_write "$state" ctx1 "please continue")
+
+  # cortex: herdr cannot see the agent, so the read proves nothing and the
+  # doorbell must still be typed rather than skipped as a positively dead pane.
+  log="$dir/cortex.log"; : > "$log"
+  rc=0
+  PATH="$fb:$PATH" FM_TEST_HERDR_LOG="$log" \
+    inbox_lib "$state" fm_task_inbox_ring herdr fmtest:w1:p1 "$rec" fm-ctx1 cortex || rc=$?
+  [ "$rc" != 3 ] \
+    || fail "a live cortex worker herdr cannot see must not be skipped as a dead pane (rc=$rc)"
+  grep -qF 'pane send-text' "$log" \
+    || fail "the cortex doorbell was never typed:"$'\n'"$(cat "$log")"
+  grep -qF 'Firstmate instruction waiting' "$log" \
+    || fail "the cortex doorbell carried no instruction pointer:"$'\n'"$(cat "$log")"
+
+  # claude: herdr DOES integrate with it, so agent_not_found is real evidence of
+  # an agent-free pane and the existing skip must survive this change untouched.
+  log="$dir/claude.log"; : > "$log"
+  rc=0
+  PATH="$fb:$PATH" FM_TEST_HERDR_LOG="$log" \
+    inbox_lib "$state" fm_task_inbox_ring herdr fmtest:w1:p1 "$rec" fm-cla1 claude || rc=$?
+  [ "$rc" = 3 ] || fail "an agent-free claude pane must still skip the ring with 3, got $rc"
+  if grep -qF 'pane send-text' "$log"; then
+    fail "an agent-free claude pane was typed into:"$'\n'"$(cat "$log")"
+  fi
+
+  # A caller that names no harness keeps today's harness-blind verdict exactly,
+  # so this argument only ever adds knowledge and never changes an old caller.
+  log="$dir/blind.log"; : > "$log"
+  rc=0
+  PATH="$fb:$PATH" FM_TEST_HERDR_LOG="$log" \
+    inbox_lib "$state" fm_task_inbox_ring herdr fmtest:w1:p1 "$rec" fm-x1 || rc=$?
+  [ "$rc" = 3 ] || fail "a harness-less ring must keep the existing skip, got $rc"
+
+  [ -f "$rec" ] || fail "ringing must leave the durable record in place for acknowledgement"
+  pass "fm-task-inbox-lib.sh: the doorbell rings a cortex herdr worker instead of calling it dead"
+}
+
+# The same argument on the three-state compatibility view. `dead` is the one
+# value this view licenses action on, so collapsing a live cortex worker onto it
+# is what made the watcher's paused-classification gates and fm-spawn's
+# duplicate-launch guard read a running worker as gone.
+test_cortex_herdr_agent_alive_is_not_dead_for_a_live_worker() {
+  local fb out
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  mkdir -p "$TMP_ROOT/herdr-alive"
+  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-alive")
+  alive_eval() { PATH="$fb:$PATH" bash -c ". \"\$0/bin/fm-backend.sh\"; $1" "$ROOT"; }
+
+  out=$(alive_eval 'fm_backend_agent_alive herdr fmtest:w1:p1 cortex')
+  [ "$out" = unknown ] \
+    || fail "a cortex worker herdr cannot see must not read dead, got '$out'"
+  out=$(alive_eval 'fm_backend_agent_alive herdr fmtest:w1:p1 claude')
+  [ "$out" = dead ] || fail "an agent-free claude endpoint must still read dead, got '$out'"
+  out=$(alive_eval 'fm_backend_agent_alive herdr fmtest:w1:p1')
+  [ "$out" = dead ] || fail "a harness-less caller must keep the existing verdict, got '$out'"
+  pass "fm-backend.sh: fm_backend_agent_alive forwards the harness that makes the read honest"
 }
 
 # --- control mechanics -------------------------------------------------------
@@ -415,7 +513,12 @@ test_cortex_launch_carries_the_brief_positionally() {
   assert_contains "$launch" 'encode launch-brief' "cortex launch must carry the brief at launch"
   assert_contains "$launch" '--bypass' "cortex launch must auto-approve tool calls"
   assert_contains "$launch" '--auto-accept-plans' "cortex launch must clear the plan-mode gate"
-  assert_contains "$launch" '--no-auto-update' "cortex launch must pin the installed version"
+  # --no-auto-update was removed deliberately (docs/verification/cortex.md):
+  # it cannot stop a mid-session swap, and its only durable effect is workers
+  # permanently declining upstream fixes. Pinned so it cannot drift back in.
+  case "$launch" in
+    *--no-auto-update*) fail "cortex launch must not pass --no-auto-update" ;;
+  esac
   # cortex does not scrub an inherited CLAUDECODE, so the launch boundary must.
   assert_contains "$launch" '-u CLAUDECODE' "cortex launch must clear the foreign claude marker"
   assert_contains "$launch" '-u GEMINI_CLI' "cortex launch must clear the foreign gemini marker"
@@ -590,6 +693,8 @@ test_cortex_ancestry_matches_only_the_anchored_command_name
 test_cortex_pane_process_classifies_as_a_live_agent
 test_cortex_herdr_agent_read_is_not_agent_free_proof
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped
+test_cortex_herdr_steering_rings_instead_of_reporting_a_dead_pane
+test_cortex_herdr_agent_alive_is_not_dead_for_a_live_worker
 test_cortex_control_mechanics_are_the_verified_ones
 test_cortex_and_codex_families_do_not_swallow_each_other
 test_cortex_is_crewmate_and_scout_only

@@ -144,6 +144,13 @@ mkdir -p "$STATE"
 # (inbox_steer_check below).
 # shellcheck source=bin/fm-task-inbox-lib.sh
 . "$SCRIPT_DIR/fm-task-inbox-lib.sh"
+# The control-plane capability tables, sourced ONLY for fm_control_harness_family:
+# the endpoint reads below must name a window's verified harness family so a
+# backend blind to that harness cannot be misread as a dead agent
+# (window_harness_family). It is a pure contract with no side effects, runs no
+# backend command, and reads no state, so sourcing it costs the watcher nothing.
+# shellcheck source=bin/fm-control-lib.sh
+. "$SCRIPT_DIR/fm-control-lib.sh"
 # The away-posture record (state/.afk-contract) is the posture in both the
 # attended and the afk session; bin/fm-afk-contract.sh owns its schema and this
 # watcher reads only its presence (afk_record_present below).
@@ -355,6 +362,19 @@ window_harness() {
   grep '^harness=' "$meta" | cut -d= -f2- || true
 }
 
+# The verified harness FAMILY of a window, for the endpoint reads that must not
+# be harness-blind (fm_backend_agent_state, fm_backend_agent_alive, and the
+# doorbell's own pre-check inside fm_task_inbox_ring). A window with no recorded
+# harness, or one recorded from a raw launch command no adapter claims, yields
+# the empty string, which is exactly the harness-blind classification those
+# reads already performed - so this only ever ADDS knowledge, never removes it.
+window_harness_family() {
+  local w=$1 harness
+  harness=$(window_harness "$w") || return 0
+  [ -n "$harness" ] || return 0
+  fm_control_harness_family "$harness" 2>/dev/null || true
+}
+
 window_label() {
   local w=$1 task
   task=$(window_to_task "$w" "$STATE")
@@ -407,7 +427,7 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 # too: their pane-staleness exemption is about quiet panes being healthy,
 # while an unacknowledged instruction past the ladder is a stuck steer.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason ring_rc backend agent_state
+  local w=$1 task=$2 action verb rec count tail40 reason ring_rc backend agent_state harness
   action=$(fm_task_inbox_due_action "$STATE" "$task") || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -420,7 +440,8 @@ inbox_steer_check() {  # <window> <task>
       ;;
   esac
   backend=$(window_backend "$w")
-  agent_state=$(fm_backend_agent_state "$backend" "$w" 2>/dev/null || true)
+  harness=$(window_harness_family "$w")
+  agent_state=$(fm_backend_agent_state "$backend" "$w" "$harness" 2>/dev/null || true)
   case "$agent_state" in
     dead|missing)
       inbox_steer_escalate_unavailable "$w" "$task" "$rec"
@@ -434,7 +455,7 @@ inbox_steer_check() {  # <window> <task>
   case "$verb" in
     ring)
       ring_rc=0
-      fm_task_inbox_ring "$backend" "$w" "$rec" "$(window_label "$w")" || ring_rc=$?
+      fm_task_inbox_ring "$backend" "$w" "$rec" "$(window_label "$w")" "$harness" || ring_rc=$?
       if [ "$ring_rc" -eq 3 ]; then
         inbox_steer_escalate_unavailable "$w" "$task" "$rec"
         return 0
@@ -1111,7 +1132,8 @@ pause_state_class() {  # <window> <task>
   kind=$(window_kind "$win")
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
     if [ "$kind" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
+      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" \
+        "$(window_harness_family "$win")" 2>/dev/null) || agent_alive=unknown
       if [ "$agent_alive" != dead ]; then
         rm -f "$recheck_file"
         printf 'none'
@@ -1128,7 +1150,8 @@ pause_state_class() {  # <window> <task>
     return
   fi
   if [ "$kind" != secondmate ]; then
-    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
+    agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" \
+      "$(window_harness_family "$win")" 2>/dev/null) || agent_alive=unknown
     if [ "$agent_alive" != dead ]; then
       rm -f "$recheck_file"
       printf 'none'

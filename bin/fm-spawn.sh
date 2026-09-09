@@ -280,8 +280,12 @@
 # .cortex/settings.local.json, the same local settings tier claude uses, because
 # cortex's hook loader reads only a fixed path set (its own hooks.json plus
 # ~/.claude, ~/.cortex, and the worktree's .claude/.cortex settings) and its
-# --config settings file is NOT one of them. The written file is git-excluded and
-# retired with the worktree. cortex is crewmate/scout only and is refused for
+# --config settings file is NOT one of them. The written file is git-excluded, but
+# unlike claude's it is NOT in bin/fm-teardown.sh's enumerated pool-return
+# cleanup, so on a POOLED worktree it survives the reset and its Stop hook can
+# still touch a retired task's turn-end file; a disposable worktree is deleted
+# outright and is unaffected. Adding it there is tracked in
+# docs/verification/cortex.md. cortex is crewmate/scout only and is refused for
 # --secondmate, like muse, gemini, and rovo.
 # cursor installs no per-task hook either: it writes state/<id>.cursor-session to
 # bind the pane to cursor's own conversation transcript (projects root, the exact
@@ -1662,37 +1666,27 @@ case "$ARG3" in
     ;;
 esac
 
-# muse and gemini are verified as CREWMATE/SCOUT adapters only. A secondmate is
-# a firstmate instance, so it needs a primary supervision protocol.
-# gemini has none: docs/supervision-protocols/ carries no gemini wake protocol
-# and this task verified only crewmate-side launch, busy state, interrupt, and
-# exit, so a gemini secondmate is refused rather than stood up on an unverified
-# supervision path. muse has none either, and its
-# Claude-compatible hook dialect explicitly rejects the model-reawakening and
-# asyncRewake handlers that firstmate's primary turn-end supervision is built on
-# (muse 0.1.0-R708.1). Refusing here keeps that gap loud instead of standing up a
-# secondmate whose supervision cycle could never be armed.
-if [ "$KIND" = secondmate ] && { [ "$HARNESS" = muse ] || [ "$HARNESS" = gemini ]; }; then
+# Some verified adapters are CREWMATE/SCOUT only. A secondmate is a firstmate
+# instance, so it needs a primary supervision protocol, and these have none:
+# gemini - docs/supervision-protocols/ carries no gemini wake protocol and this
+#   task verified only crewmate-side launch, busy state, interrupt, and exit, so
+#   a gemini secondmate would be stood up on an unverified supervision path.
+# muse - its Claude-compatible hook dialect explicitly rejects the
+#   model-reawakening and asyncRewake handlers that firstmate's primary turn-end
+#   supervision is built on (muse 0.1.0-R708.1).
+# rovo - no turn-end hook and no verified primary integration, so a secondmate
+#   that must itself act as a primary could never be supervised.
+# cortex - no wake protocol and no turn-end guard adapter. Its crewmate turn-end
+#   hook does NOT close that gap: a primary also needs the session-start nudge,
+#   the pre-tool arm guard, and a watcher continuity owner.
+# bin/fm-control-lib.sh's fm_control_harness_supports_kind is the single owner of
+# which adapter runs which kind, so the list is read from there rather than
+# restated here. The fm_control_harness_supported test in front of it is what
+# keeps the raw-launch escape hatch open: that helper reports nonzero for ANY
+# unverified adapter, and an unverified secondmate is deliberately permitted.
+if [ "$KIND" = secondmate ] && fm_control_harness_supported "$HARNESS" \
+  && ! fm_control_harness_supports_kind "$HARNESS" secondmate; then
   echo "error: $HARNESS is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# rovo carries the same primary-supervision gap as muse: no turn-end hook, no
-# verified primary integration, so a secondmate (a firstmate instance that must
-# itself act as a primary) could never be supervised. Refuse loudly rather than
-# standing one up with no way to arm its watch cycle.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = rovo ]; then
-  echo "error: rovo is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
-  exit 1
-fi
-
-# cortex carries the same primary-supervision gap: docs/supervision-protocols/
-# holds no cortex wake protocol and no turn-end guard adapter exists for it, so a
-# secondmate on cortex could never arm its own supervision cycle. Its crewmate
-# turn-end hook does NOT close that gap - a primary also needs the session-start
-# nudge, the pre-tool arm guard, and a watcher continuity owner. Refuse loudly.
-if [ "$KIND" = secondmate ] && [ "$HARNESS" = cortex ]; then
-  echo "error: cortex is a verified crewmate/scout adapter only and cannot run a secondmate; it has no primary supervision protocol. Select a harness verified for secondmates." >&2
   exit 1
 fi
 

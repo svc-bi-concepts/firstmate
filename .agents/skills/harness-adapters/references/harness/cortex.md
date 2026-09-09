@@ -43,7 +43,10 @@ Verified live: a `--config` file carrying `UserPromptSubmit`/`Stop`/`SessionEnd`
 The hook loader reads a fixed path set instead: `<cortex-config-dir>/hooks.json`, then `settings.json` under `~/.claude` and `~/.cortex`, then `settings.json` and `settings.local.json` under the working directory's `.claude` and `.cortex`, in that priority order.
 `../../../../../bin/fm-spawn.sh` therefore writes the busy-state and turn-end hooks into the WORKTREE at `.cortex/settings.local.json` - the highest-priority tier, and the direct analogue of the `.claude/settings.local.json` it already writes for claude.
 Hook arrays merge across those tiers, so a project's own hooks still run alongside firstmate's.
-The file is git-excluded by the spawn and retired with the disposable worktree, so nothing survives into a pooled one and nothing global is installed.
+The file is git-excluded by the spawn, and nothing global is installed.
+It is NOT yet retired on pool return: `../../../../../bin/fm-teardown.sh`'s cleanup enumerates the hook artifacts it deletes (`.claude/settings.local.json`, the opencode plugins, the grok and kimi turn-end markers) and `.cortex/settings.local.json` is absent from that list, so on a POOLED worktree it survives `treehouse return` - being git-excluded is exactly why the reset does not remove it - and its `Stop` hook can still `touch` a retired task's turn-end file.
+A disposable worktree is unaffected, because it is deleted outright.
+Adding it to that cleanup list is tracked in `../../../../../docs/verification/cortex.md` under "Decided but not included".
 
 This is NOT gemini's shape, and the difference is worth stating because the two look alike from the outside.
 Gemini exposes a settings PATH environment variable, so its hooks live in a firstmate-owned file under `state/`, outside the worktree.

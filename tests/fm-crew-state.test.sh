@@ -1194,6 +1194,53 @@ test_no_run_busy_pane() {
   pass "no run + a busy semantic record reads working, attributed to its source"
 }
 
+# The cortex adapter's acceptance test: before its semantic source was wired,
+# a cortex worker read `unknown - harness state unavailable` here, so
+# supervision could not tell working from finished. Its hook-written record must
+# now produce a real state through the same path every other converted adapter
+# uses.
+test_no_run_cortex_hook_record_reads_working() {
+  reset_fakes
+  local d; d=$(new_case cortex-busy)
+  make_repo_on_branch "$d/wt" fm/feat-cx
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx.meta" "window=fm:fm-feat-cx" "worktree=$d/wt" "kind=ship" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-cx)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-cx busy --gen "$gen" \
+    --source cortex-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-cx)
+  assert_contains "$out" "state: working" "a cortex busy record must read working"
+  assert_contains "$out" "source: pane" "a cortex busy record must be attributed to the pane source"
+  assert_contains "$out" "cortex-hook" "the cortex verdict must name its semantic source"
+  case "$out" in
+    *"harness state unavailable"*) fail "a wired cortex worker must no longer read harness state unavailable" ;;
+  esac
+  pass "fm-crew-state.sh: a cortex hook record reads working, attributed to cortex-hook"
+}
+
+# Divergence: the case above must not pass merely because ANY record classifies.
+# One adapter's writer may never classify another's task, so a claude-hook record
+# on a cortex task stays unknown - the honest verdict, not a borrowed one.
+test_no_run_cortex_rejects_a_foreign_adapter_record() {
+  reset_fakes
+  local d; d=$(new_case cortex-foreign)
+  make_repo_on_branch "$d/wt" fm/feat-cx2
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cx2.meta" "window=fm:fm-feat-cx2" "worktree=$d/wt" "kind=ship" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=1
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-cx2)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-cx2 busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-cx2)
+  assert_contains "$out" "state: unknown" "a foreign adapter's record must not classify a cortex task"
+  pass "fm-crew-state.sh: a cortex task ignores another adapter's busy record"
+}
+
 # A converted adapter must NOT read working from rendered footer text: the
 # redesign removed that dependency, so a pane painting "esc to interrupt" with
 # no semantic record is unknown, never working and never silently idle.
@@ -2267,6 +2314,8 @@ test_cross_branch_attribution_picks_most_recent_row
 test_coarse_run_does_not_probe_other_branch_ci_log_for_ready_status
 test_other_branch_run_ignored
 test_no_run_busy_pane
+test_no_run_cortex_hook_record_reads_working
+test_no_run_cortex_rejects_a_foreign_adapter_record
 test_no_run_footer_text_alone_is_not_working
 test_no_run_grok_uses_isolated_fallback
 test_no_run_herdr_unknown_uses_backend_capture

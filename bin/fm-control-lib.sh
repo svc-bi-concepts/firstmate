@@ -63,7 +63,7 @@ fm_control_verb_allowed() {  # <verb>
 # than guessed at, exactly as a spawn on it would be.
 fm_control_harness_supported() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp) return 0 ;;
+    claude|codex|opencode|pi|pi-signed|grok|kimi|cursor|gemini|muse|rovo|omp|cortex) return 0 ;;
   esac
   return 1
 }
@@ -82,6 +82,9 @@ fm_control_harness_family() {  # <recorded-harness>
     pi-signed) printf 'pi-signed' ;;
     omp) printf 'omp' ;;
     claude*) printf 'claude' ;;
+    # cortex is matched BEFORE codex so neither prefix can swallow the other;
+    # they are distinct adapters that only look alike as strings.
+    cortex*) printf 'cortex' ;;
     codex*) printf 'codex' ;;
     opencode*) printf 'opencode' ;;
     grok*) printf 'grok' ;;
@@ -94,8 +97,8 @@ fm_control_harness_family() {  # <recorded-harness>
   esac
 }
 
-# Which task kinds an adapter is verified to run. muse, gemini, and rovo are
-# crewmate/scout adapters only: none has a primary supervision protocol,
+# Which task kinds an adapter is verified to run. muse, gemini, rovo, and cortex
+# are crewmate/scout adapters only: none has a primary supervision protocol,
 # and bin/fm-spawn.sh refuses a --secondmate launch on any of them. The control
 # plane asks this BEFORE it stops anything, so an incompatible relaunch target is
 # refused while the current agent is still running rather than after it has
@@ -104,7 +107,7 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
   local harness=${1-} kind=${2-}
   fm_control_harness_supported "$harness" || return 1
   case "$harness" in
-    muse|gemini|rovo) [ "$kind" != secondmate ] || return 1 ;;
+    muse|gemini|rovo|cortex) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
 }
@@ -116,10 +119,13 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
 # rovo cancels on a single Escape too, printing "Agent cancelled" (verified,
 # 202609.1.2). omp (Oh My Pi) shares Pi's single Escape, empty composer
 # afterwards, and /quit exit (verified omp 18.1.2 in a PTY, re-verified 18.1.11
-# through Herdr).
+# through Herdr). cortex names its own key in the running turn's footer
+# (`esc to interrupt`), and a single Escape sent during a live bash tool call
+# cancelled it, printing `Interrupted - tell Cortex Code what to do next.`
+# (verified over a raw PTY, Cortex Code v1.1.84).
 fm_control_interrupt_key() {  # <harness>
   case "${1-}" in
-    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo) printf 'Escape' ;;
+    claude|codex|opencode|pi|pi-signed|omp|kimi|cursor|gemini|muse|rovo|cortex) printf 'Escape' ;;
     grok) printf 'C-c' ;;
     *) return 1 ;;
   esac
@@ -130,7 +136,7 @@ fm_control_interrupt_key() {  # <harness>
 fm_control_interrupt_repeat() {  # <harness>
   case "${1-}" in
     opencode) printf '2' ;;
-    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo) printf '1' ;;
+    claude|codex|pi|pi-signed|omp|grok|kimi|cursor|gemini|muse|rovo|cortex) printf '1' ;;
     *) return 1 ;;
   esac
 }
@@ -145,13 +151,16 @@ fm_control_interrupt_repeat() {  # <harness>
 # follow-up` placeholder, so it needs no clear key. gemini was checked the
 # same way and also does not repollute: after a single Escape it prints
 # `Request cancelled.` and its composer shows only the `Type your message
-# or @path/to/file` placeholder. Prints the key or nothing;
+# or @path/to/file` placeholder. cortex was checked the same way and also does
+# not repollute: after a single Escape its composer returns to the
+# `Plans will be auto accepted (/auto-accept-plan-off to disable)` placeholder
+# it renders under the launch's --auto-accept-plans. Prints the key or nothing;
 # a harness with no verified mechanics returns nonzero, matching the tables
 # above.
 fm_control_interrupt_clear_key() {  # <harness>
   case "${1-}" in
     muse) printf 'C-u' ;;
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo) ;;
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|cortex) ;;
     *) return 1 ;;
   esac
 }
@@ -166,7 +175,12 @@ fm_control_interrupt_ack_source() {  # <harness>
     # rovo's TUI prints "Agent cancelled" on Escape, but for parity with
     # claude/cursor this stays 'none': the ack is a rendered string, not a
     # recorded state source, and rovo has no busy wiring to confirm against.
-    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo) printf 'none' ;;
+    # cortex renders its own `Interrupted` line and stays 'none' for the same
+    # reason. Its interrupt is additionally NOT closed by a hook: cortex fires
+    # no Stop event for a cancelled turn (verified over a raw PTY), so an
+    # interrupted cortex worker keeps its cortex-hook busy record exactly as an
+    # interrupted claude worker does.
+    claude|codex|opencode|pi|pi-signed|omp|grok|kimi|cursor|gemini|rovo|cortex) printf 'none' ;;
     *) return 1 ;;
   esac
 }
@@ -175,7 +189,7 @@ fm_control_interrupt_ack_source() {  # <harness>
 fm_control_exit_command() {  # <harness>
   case "${1-}" in
     claude|opencode|grok|kimi|cursor|muse|rovo) printf '/exit' ;;
-    codex|pi|pi-signed|omp|gemini) printf '/quit' ;;
+    codex|pi|pi-signed|omp|gemini|cortex) printf '/quit' ;;
     *) return 1 ;;
   esac
 }
@@ -246,6 +260,12 @@ fm_control_harness_wiring_paths() {  # <harness> <worktree> <state-dir> <id>
     # is written into the worktree, whose own .gemini/settings.json belongs to
     # the project, and nothing global is installed.
     gemini) printf '%s\n' "$state/$id.gemini-settings.json" ;;
+    # cortex's busy-state and turn-end hooks live in the WORKTREE, at
+    # .cortex/settings.local.json, because cortex's hook loader reads a fixed
+    # set of settings paths and its --config settings file is NOT one of them
+    # (verified, Cortex Code v1.1.84). That is claude's shape, not gemini's;
+    # references/harness/cortex.md in the harness-adapters skill owns why.
+    cortex) printf '%s\n' "$wt/.cortex/settings.local.json" ;;
   esac
 }
 

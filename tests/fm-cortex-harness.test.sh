@@ -11,8 +11,11 @@
 #      cortex reads them from its own settings and environment, so an operator
 #      can set them for a process cortex never started.
 #   3. cortex ships as a compiled single binary reporting comm=cortex, so
-#      ancestry reaches it - unlike gemini's node bundle - and the arm must stay
-#      anchored so cortexd/cortex-helper cannot claim the identity.
+#      ancestry reaches it - unlike gemini's node bundle - and both the harness
+#      arm and the tmux pane classifier must stay anchored so cortexd and
+#      cortex-helper cannot claim the identity. The pane classifier needs its
+#      own cortex arm: the neighbouring *codex* glob does not cover it, and
+#      without one every fm-control verb refuses a live cortex worker.
 #   4. The brief rides the launch command as a positional prompt, and the launch
 #      must NOT carry --config: cortex's --config settings file is not a hook
 #      source, and pointing at one without cortexAgentConnectionName reopens the
@@ -31,6 +34,9 @@ set -u
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-backend.sh"
+fm_backend_source tmux || fail "fm_backend_source tmux failed"
 
 # bin/fm-harness.sh checks verified ENV markers before ancestry. A suite run
 # from inside Cursor, Claude, Pi, Grok, Rovo, or Gemini inherits those markers,
@@ -125,6 +131,43 @@ SH
   out=$(run_fake_ancestry_detect "$fakebin" node 'node /home/u/app/server.js --agent cortex')
   [ "$out" != cortex ] || fail "a later node argument naming cortex must not detect cortex, got '$out'"
   pass "fm-harness.sh: ancestry detects an anchored cortex command and rejects neighbours"
+}
+
+# --- endpoint liveness -------------------------------------------------------
+
+test_cortex_pane_process_classifies_as_a_live_agent() {
+  local name
+  # A live cortex pane's foreground process reports comm=cortex. Unattributed,
+  # the composed verdict is `ambiguous`, and interrupt, exit and relaunch all
+  # refuse the very worker the control mechanics above exist to supervise.
+  for name in cortex /Users/u/.local/bin/cortex \
+    /Users/u/.local/share/cortex/1.1.84+190213/cortex; do
+    [ "$(fm_backend_tmux_classify_process_name "$name")" = agent ] \
+      || fail "a cortex pane process ($name) must classify as a live agent"
+  done
+  # argv[0] carries the identity on its own, which is the name surface procps
+  # reports on Linux when the command name says nothing.
+  [ "$(fm_backend_tmux_classify_process_name '' cortex)" = agent ] \
+    || fail "cortex named only in argv[0] must classify as a live agent"
+
+  # Divergence: cortex has its OWN arm because the neighbouring *codex* glob
+  # does not cover it, and that arm is anchored, so the near misses below must
+  # stay unattributed rather than be swept in by a widened *cortex* glob.
+  for name in cortexd cortex-helper mycortex cortex.bak /opt/cortexd/bin/run; do
+    [ "$(fm_backend_tmux_classify_process_name "$name")" = other ] \
+      || fail "'$name' merely resembles cortex and must not classify as a live agent"
+  done
+
+  # The neighbouring verdicts the cortex arm must leave exactly as they were.
+  for name in codex claude opencode rovo omp pi; do
+    [ "$(fm_backend_tmux_classify_process_name "$name")" = agent ] \
+      || fail "'$name' must still classify as a live agent"
+  done
+  [ "$(fm_backend_tmux_classify_process_name ompd)" = other ] \
+    || fail "ompd must still stay unattributed"
+  [ "$(fm_backend_tmux_classify_process_name bash)" = shell ] \
+    || fail "an idle shell must still classify as a shell"
+  pass "backends/tmux.sh: a cortex pane process classifies as a live agent and its near misses do not"
 }
 
 # --- control mechanics -------------------------------------------------------
@@ -413,6 +456,7 @@ test_cortex_spawn_refuses_a_missing_executable() {
 test_cortex_marker_outranks_inherited_claudecode
 test_cortex_does_not_claim_configured_input_variables
 test_cortex_ancestry_matches_only_the_anchored_command_name
+test_cortex_pane_process_classifies_as_a_live_agent
 test_cortex_control_mechanics_are_the_verified_ones
 test_cortex_and_codex_families_do_not_swallow_each_other
 test_cortex_is_crewmate_and_scout_only

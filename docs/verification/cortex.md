@@ -1,7 +1,8 @@
 # Verification: the cortex (Snowflake Cortex Code) crewmate/scout adapter
 
 Active empirical evidence for firstmate's cortex adapter.
-The skill tree rooted at [`.agents/skills/harness-adapters/SKILL.md`](../../.agents/skills/harness-adapters/references/harness/cortex.md) owns the operating facts; this record owns how they were established and what is still unproven.
+The [`harness-adapters`](../../.agents/skills/harness-adapters/SKILL.md) skill's [cortex reference](../../.agents/skills/harness-adapters/references/harness/cortex.md) owns the operating facts; this record owns how they were established and what is still unproven.
+[`configuration.md`](../configuration.md#harness-support) owns the operator-facing support statement, and [`herdr-backend.md`](../herdr-backend.md#restart-and-liveness-behavior) owns the harness-aware Herdr classification rule this record establishes.
 
 ## Subject
 
@@ -263,8 +264,6 @@ These were raised by review on this branch and decided, but are not in this chan
 
 - Remove `.cortex/settings.local.json` in `bin/fm-teardown.sh`'s pool-worktree cleanup, beside the `.claude`, `.opencode`, grok, and kimi artifacts.
 - Replace the raw `grep` over `.git/info/exclude` in `tests/fm-cortex-harness.test.sh` with `git check-ignore`, this repo's own idiom.
-- Add cortex to the operator-facing "Harness support" section of `docs/configuration.md`.
-- Fix the link label and target disagreement at the top of this file.
 - Remove the `${HOME:-}/.local/bin/cortex` fallback from `resolve_cortex_binary`, leaving the PATH lookup, matching `resolve_muse_binary`.
   `resolve_rovo_binary` carries the identical fallback, so removing it from cortex alone leaves the two inconsistent; decide both together.
 - Remove the second detection marker arm `CORTEX_TASK_CONTEXT_ID`, since the two variables were only ever observed together and `bin/fm-harness.sh` returning `unknown` is a safe stop-and-ask failure mode.

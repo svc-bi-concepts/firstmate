@@ -1136,6 +1136,10 @@ kimi model profile is accepted^{"rules":[{"when":"kimi work","use":{"harness":"k
 unsupported kimi effort is flagged^{"rules":[{"when":"kimi work","use":{"harness":"kimi","model":"kimi-code/k3","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: kimi:high
 cortex profile is accepted^{"rules":[{"when":"cortex work","use":{"harness":"cortex"}}]}^empty^
 cortex model and effort profile is accepted^{"rules":[{"when":"cortex work","use":{"harness":"cortex","model":"claude-sonnet-5","effort":"high"}}],"default":{"harness":"cortex"}}^empty^
+cortex shared efforts are accepted^{"rules":[{"when":"cortex low","use":{"harness":"cortex","effort":"low"}},{"when":"cortex medium","use":{"harness":"cortex","effort":"medium"}},{"when":"cortex xhigh","use":{"harness":"cortex","effort":"xhigh"}},{"when":"cortex max","use":{"harness":"cortex","effort":"max"}}]}^empty^
+unsupported cortex minimal effort is flagged^{"rules":[{"when":"cortex work","use":{"harness":"cortex","effort":"minimal"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:minimal
+misspelled cortex effort is flagged^{"rules":[{"when":"cortex work","use":{"harness":"cortex","effort":"hgih"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:hgih
+unsupported cortex ultra effort is flagged^{"rules":[{"when":"cortex work","use":{"harness":"cortex","effort":"ultra"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cortex:ultra
 cursor model profile is accepted^{"rules":[{"when":"cursor work","use":{"harness":"cursor","model":"cursor-grok-4.5-high"}}]}^empty^
 unsupported cursor effort is flagged^{"rules":[{"when":"cursor work","use":{"harness":"cursor","model":"cursor-grok-4.5-high","effort":"high"}}]}^exact^CREW_DISPATCH: invalid config/crew-dispatch.json - invalid effort: cursor:high
 array use with quota-balanced is accepted^{"rules":[{"when":"big feature","use":[{"harness":"claude","model":"claude-sonnet-5","effort":"high"},{"harness":"codex","model":"gpt-5.5","effort":"high"}],"select":"quota-balanced"}]}^empty^

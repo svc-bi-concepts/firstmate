@@ -210,7 +210,8 @@ The steering doorbell is a fourth consumer of the same read, it is not a recover
 A cortex worker on a Herdr home was therefore **write-only**: startable, never redirectable.
 Every guarded lifecycle path failed loudly; this one failed quietly, which is why it survived the first round.
 
-The fix threads the same optional harness family already carried by `fm_backend_agent_state` through the remaining firstmate-side consumers: `fm_task_inbox_ring` and `fm_backend_agent_alive` now accept it, and `bin/fm-send.sh`, `bin/fm-watch.sh` (both its steer check and its paused-classification gates), and `bin/fm-spawn.sh`'s duplicate-launch guards all pass it.
+The fix threads the same optional harness family already carried by `fm_backend_agent_state` through the remaining firstmate-side consumers: `fm_task_inbox_ring` and `fm_backend_agent_alive` now accept it, and `bin/fm-send.sh`, `bin/fm-watch.sh` (both its steer check and its paused-classification gates), `bin/fm-spawn.sh`'s duplicate-launch guards, and `bin/fm-crew-state.sh`'s degraded-path endpoint read all pass it.
+That last one is the supervision read: when `pane_readable`'s capture errors or stalls under load, the fallback classifier ran blind and reported a live cortex worker as `backend target gone ... (agent gone, pane shell remains)`, a false claim that invites a teardown where `backend unreachable` invites a retry.
 Omitting the argument still yields the previous harness-blind classification, so no existing caller changes behaviour.
 
 The three-state compatibility view gained the same argument, because `dead` is the one value it licenses action on.
@@ -269,7 +270,7 @@ These were raised by review on this branch and decided, but are not in this chan
 - Remove the second detection marker arm `CORTEX_TASK_CONTEXT_ID`, since the two variables were only ever observed together and `bin/fm-harness.sh` returning `unknown` is a safe stop-and-ask failure mode.
 - The composer classification above, which is fleet-wide in `bin/fm-composer-lib.sh` and shared with rovo rather than specific to this adapter.
   It needs a real pane capture, its own regression, and a decision taken across every affected harness at once.
-- Thread the harness family through `bin/fm-remote-secondmate-control.sh`'s two endpoint reads (its agent-state probe and its doorbell ring), the last consumers left harness-blind.
+- Thread the harness family through `bin/fm-remote-secondmate-control.sh`'s two endpoint reads (its agent-state probe and its doorbell ring).
   They are deliberately untouched here because they are reachable only for a SECONDMATE, and `bin/fm-spawn.sh` refuses a cortex secondmate, so no cortex worker can reach them.
   They are worth closing when another harness Herdr cannot see becomes secondmate-capable.
 

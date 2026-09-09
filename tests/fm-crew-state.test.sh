@@ -1389,6 +1389,58 @@ test_no_run_herdr_husk_dead_still_reads_gone() {
   pass "a husk pane (agent gone) still reads gone for reclaim"
 }
 
+# Regression: the DEGRADED read path. herdr's installed build has no cortex
+# integration, so `agent get` answers agent_not_found for a LIVE cortex worker
+# exactly as it does for an empty pane. When pane_readable's capture also fails
+# (the herdr CLI erroring or stalling under load), the fallback classifier used
+# to read that as positive death and emit "agent gone, pane shell remains" about
+# a running worker - a false claim that invites a teardown. Passing the task's
+# verified harness family makes the answer unknown, which surfaces as
+# unreachable, so the honest verdict invites a retry instead.
+test_no_run_herdr_cortex_husk_answer_reads_unreachable_not_gone() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr cortex husk test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-cortex-blind)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-cx
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-cx.meta" "window=default:w1:p2" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=cortex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+  FM_FAKE_HERDR_HUSK=1
+  local out; out=$(run_crew_state "$d" feat-herdr-cx)
+  assert_contains "$out" "state: unknown" "a blind cortex read has no confident current state"
+  assert_contains "$out" "backend unreachable" "a read blind to cortex must report unreachable"
+  assert_not_contains "$out" "backend target gone" "a read blind to cortex is not positive death evidence"
+  assert_not_contains "$out" "agent gone, pane shell remains" \
+    "crew-state must not claim a live cortex worker's agent is gone"
+  pass "a herdr agent_not_found on a cortex task reads unreachable, never gone"
+}
+
+# Divergence: the case above must not pass by making every degraded herdr read
+# unreachable. A harness herdr DOES integrate with keeps its positive death
+# evidence on the identical fixture, so only cortex's verdict moved.
+test_no_run_herdr_husk_verdict_is_harness_scoped() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr husk scoping test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-husk-scoped)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-scoped
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-scoped.meta" "window=default:w1:p2" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=codex"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_TMUX_MISSING=1
+  FM_FAKE_HERDR_READ_FAIL=1
+  FM_FAKE_HERDR_HUSK=1
+  local out; out=$(run_crew_state "$d" feat-herdr-scoped)
+  assert_contains "$out" "agent gone, pane shell remains" \
+    "a harness herdr can see keeps its husk death evidence"
+  pass "the cortex-only exemption does not move another harness's husk verdict"
+}
+
 # Regression (2026-07 herdr false-surface incident, now solved semantically):
 # herdr's agent.get reports generation state ("working" only while the model is
 # actively streaming - docs/herdr-backend.md "Busy state"), not "this crew's
@@ -2322,6 +2374,8 @@ test_no_run_herdr_unknown_uses_backend_capture
 test_no_run_herdr_cli_failure_reads_unreachable_not_gone
 test_no_run_herdr_alive_with_failed_read_stays_live
 test_no_run_herdr_husk_dead_still_reads_gone
+test_no_run_herdr_cortex_husk_answer_reads_unreachable_not_gone
+test_no_run_herdr_husk_verdict_is_harness_scoped
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log

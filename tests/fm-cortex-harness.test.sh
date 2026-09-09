@@ -616,7 +616,7 @@ test_cortex_stale_incarnation_hook_is_harmless() {
   pass "fm-spawn.sh: cortex hook events from a superseded incarnation are rejected safely"
 }
 
-test_cortex_effort_caps_xhigh_and_omits_minimal() {
+test_cortex_effort_caps_xhigh_and_refuses_minimal() {
   local rec out launch_log launch
   # Cortex Code v1.1.84 --effort accepts minimal|low|medium|high|max and has no
   # xhigh, so model-and-effort.md's cap rule applies rather than record-and-omit.
@@ -644,7 +644,25 @@ test_cortex_effort_caps_xhigh_and_omits_minimal() {
         cx-eff-2 "$PROJ_DIR" --effort low)
   expect_code 0 $? "cortex spawn with low should succeed: $out"
   assert_contains "$(cat "$launch_log")" "--effort 'low'" "a supported effort must pass straight through"
-  pass "fm-spawn.sh: cortex caps xhigh onto high and passes supported levels through"
+
+  # minimal is cortex's own sub-low level. It sits below firstmate's shared
+  # effort vocabulary, so it never reaches the cortex adapter arm at all -
+  # fm-spawn refuses it up front, before any endpoint, metadata, or typed launch
+  # exists. That refusal is what makes "deliberately unreachable" true, so it is
+  # what this pins: a dropped-but-accepted minimal would be the silent failure
+  # this adapter exists to eliminate.
+  rec=$(make_cortex_case effort-minimal cx-eff-3)
+  read_cortex_case "$rec"
+  launch_log="$CASE_DIR/launch.log"
+  : > "$launch_log"
+  out=$(FM_FAKE_LAUNCH_LOG="$launch_log" run_cortex_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" \
+        cx-eff-3 "$PROJ_DIR" --effort minimal 2>&1)
+  expect_code 1 $? "cortex spawn with minimal must be refused: $out"
+  assert_contains "$out" '--effort must be one of low, medium, high, xhigh, max, ultra' \
+    "the refusal must name the shared effort vocabulary"
+  assert_absent "$HOME_DIR/state/cx-eff-3.meta" "a refused effort must leave no task metadata"
+  [ ! -s "$launch_log" ] || fail "a refused effort must not type a launch command"
+  pass "fm-spawn.sh: cortex caps xhigh onto high, passes supported levels, and refuses minimal"
 }
 
 test_cortex_secondmate_launch_is_refused() {
@@ -704,6 +722,6 @@ test_cortex_launch_carries_the_brief_positionally
 test_cortex_spawn_writes_worktree_hooks_and_excludes_them
 test_cortex_hooks_drive_the_semantic_busy_lifecycle
 test_cortex_stale_incarnation_hook_is_harmless
-test_cortex_effort_caps_xhigh_and_omits_minimal
+test_cortex_effort_caps_xhigh_and_refuses_minimal
 test_cortex_secondmate_launch_is_refused
 test_cortex_spawn_refuses_a_missing_executable

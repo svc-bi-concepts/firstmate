@@ -1310,6 +1310,75 @@ test_legacy_record_teardown_refuses_an_ambiguous_endpoint() {
   pass "an endpoint that cannot be confidently read as dead refuses --legacy-record teardown"
 }
 
+test_legacy_record_teardown_refuses_a_harness_herdr_cannot_see() {
+  local case_dir rc before
+  # --legacy-record teardown proceeds only on a confidently dead or missing
+  # endpoint, and herdr's agent read cannot see a harness its build ships no
+  # integration for: a LIVE worker on such a harness answers agent_not_found
+  # exactly like an empty pane. Without the recorded harness this path would read
+  # that as `dead` and tear down the record of a running worker.
+  case_dir=$(make_case legacy-herdr-unseen-harness)
+  write_legacy_meta "$case_dir" no-mistakes ship
+  sed -i.bak 's/^window=.*/window=default:wU:pU/; s/^harness=.*/harness=cortex/' \
+    "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  printf '%s\n' \
+    'backend=herdr' \
+    'herdr_session=default' \
+    'herdr_workspace_id=wU' \
+    'herdr_tab_id=wU:tU' \
+    'herdr_pane_id=wU:pU' >> "$case_dir/state/task-x1.meta"
+  seed_backlog_in_flight "$case_dir"
+  wt_commit "$case_dir" "landed legacy work"
+  add_fork_with_pushed_branch "$case_dir"
+  # The pane structurally exists and no agent is registered for it, and this
+  # build reports no cortex integration - exactly the live-worker shape.
+  cat > "$case_dir/fakebin/herdr" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "session list") printf '%s\n' '{"sessions":[{"name":"default","running":true,"socket_path":"$case_dir/herdr.sock"}]}' ;;
+  "status --json") printf '%s\n' '{"client":{"version":"0.8.2","protocol":20},"server":{"running":true}}' ;;
+  "integration status")
+    for n in pi omp claude codex copilot kimi opencode cursor grok; do
+      printf '%s: not installed (/home/u/.%s/hooks/herdr-agent-state.sh)\n' "\$n" "\$n"
+    done
+    ;;
+  "pane get") printf '%s\n' '{"result":{"pane":{"pane_id":"'"\${3:-}"'"}}}' ;;
+  "agent get") printf '%s\n' '{"error":{"code":"agent_not_found"}}'; exit 1 ;;
+  *) exit 0 ;;
+esac
+SH
+  chmod +x "$case_dir/fakebin/herdr"
+  before=$(cksum "$case_dir/state/task-x1.meta" | awk '{print $1, $2}')
+
+  set +e
+  run_teardown "$case_dir" --legacy-record > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "legacy-herdr-unseen-harness: a harness herdr cannot see must refuse the legacy acceptance"
+  grep -q "not confidently dead or agent-less" "$case_dir/stderr" \
+    || fail "legacy-herdr-unseen-harness: the refusal did not name the endpoint state"
+  [ "$(cksum "$case_dir/state/task-x1.meta" | awk '{print $1, $2}')" = "$before" ] \
+    || fail "legacy-herdr-unseen-harness: the endpoint refusal modified the task record"
+
+  # Divergence: the SAME endpoint reads and the SAME build, differing only in a
+  # harness herdr DOES integrate with, must get PAST the endpoint gate - otherwise
+  # this case would pass merely because herdr teardown broke for some other
+  # reason. The assertion is scoped to that gate rather than to a completed
+  # teardown, because completion also depends on herdr confirming the pane closed,
+  # which this canned build deliberately never does.
+  sed -i.bak 's/^harness=.*/harness=codex/' "$case_dir/state/task-x1.meta"
+  rm -f "$case_dir/state/task-x1.meta.bak"
+  set +e
+  run_teardown "$case_dir" --legacy-record > "$case_dir/stdout2" 2> "$case_dir/stderr2"
+  set -e
+  if grep -q "not confidently dead or agent-less" "$case_dir/stderr2"; then
+    fail "legacy-herdr-unseen-harness: a covered harness must clear the endpoint gate, but it was refused there too"
+  fi
+  pass "--legacy-record teardown refuses an endpoint whose harness herdr cannot see"
+}
+
 test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails() {
   local case_dir rc before
   case_dir=$(make_case legacy-stamp-rollback)
@@ -3696,6 +3765,7 @@ test_legacy_record_without_the_flag_refuses
 test_legacy_record_teardown_completes_when_landed_and_endpoint_dead
 test_legacy_record_teardown_refuses_unlanded_work
 test_legacy_record_teardown_refuses_an_ambiguous_endpoint
+test_legacy_record_teardown_refuses_a_harness_herdr_cannot_see
 test_legacy_record_rolls_the_stamp_back_when_the_marker_write_fails
 test_retained_legacy_stamp_still_faces_the_endpoint_gate
 test_legacy_record_never_accepts_a_corrupt_spawn_gen

@@ -157,7 +157,8 @@ The launch is unaffected, since the positional brief needs no readiness gate.
 
 ## Backend liveness: the tmux arm
 
-`bin/backends/tmux.sh`'s `fm_backend_tmux_classify_process_name` gained an anchored `cortex` arm, and `FM_HARNESS_RE`/`FM_HARNESS_NAMES` in `bin/fm-session-lock-lib.sh` gained the same name.
+The shared process-name vocabulary gained an anchored `cortex` arm, and `FM_HARNESS_RE`/`FM_HARNESS_NAMES` in `bin/fm-session-lock-lib.sh` gained the same name.
+That vocabulary is owned by `fm_harness_classify_process_name` in [`../../bin/fm-harness-process-lib.sh`](../../bin/fm-harness-process-lib.sh), which both the tmux and herdr adapters delegate to; `fm_backend_tmux_classify_process_name` is the tmux adapter's name for it, so a harness added here reaches both backends at once.
 The arm is needed because the neighbouring `*codex*` glob does not cover `cortex` - the two names differ by one letter - and it is anchored rather than a `*cortex*` glob so `cortexd` and `cortex-helper` cannot claim the identity.
 Without it a live cortex pane classified `other`, the composed verdict was `ambiguous`, and every `bin/fm-control.sh` verb refused the worker it could no longer see.
 Adding a literal name to those lists can only change the outcome for a process actually named `cortex`, so no other harness's classification moves; `tests/fm-cortex-harness.test.sh` asserts both directions against a faked process name.
@@ -165,6 +166,88 @@ Adding a literal name to those lists can only change the outcome for a process a
 ## Backend liveness: Herdr, proven on a real server
 
 Herdr's installed build ships no cortex integration (`herdr integration status` lists none - the same enumeration recorded in [rovo.md](rovo.md) for rovo's identical gap), so `herdr agent get <pane>` answers `agent_not_found` for a LIVE cortex pane exactly as it answers for an empty restored one.
+
+Which harnesses this applies to is not pinned in firstmate: `fm_backend_herdr_pane_agent_state` reads Herdr's own reported integration coverage and resolves `agent_not_found` to `unknown` for every harness that enumeration omits.
+On Herdr 0.8.2 that is `cortex`, `rovo`, `muse`, and `gemini`; `pi-signed` resolves through Herdr's `pi` integration because firstmate launches the same pi agent (`bin/fm-control-lib.sh`'s shared wiring paths).
+Verified 2026-09-10 on Herdr 0.8.2 against a live Cortex Code worker in the default session's pane `w16:p2`, reading its own endpoint:
+
+```
+$ herdr pane get w16:p2 --session default
+{"result":{"pane":{"agent_status":"unknown","pane_id":"w16:p2","terminal_title_stripped":"cortex",...}}}
+$ herdr agent get w16:p2 --session default
+{"error":{"code":"agent_not_found","message":"agent target w16:p2 not found"},"id":"cli:agent:get"}
+
+$ herdr integration status | cut -d: -f1 | tr '\n' ' '
+pi omp claude codex copilot devin droid kimi opencode kilo hermes qodercli qwen cursor mastracode antigravity-cli grok
+```
+
+Install state is deliberately not consulted, and this run is why: `integration status` reported every integration `not installed`, yet a live claude pane in the same session still reported a registered agent, so Herdr registers agents it launches regardless of the harness-side hook file.
+
+```
+$ herdr pane list --session default   # claude pane, same server, same moment
+{"agent":"claude","agent_status":"done","pane_id":"w0:p1",...}
+```
+
+The general rule is what makes the fix hold, and the before/after on that same live cortex pane shows why a harness name would not have:
+
+```
+harness   before(HEAD)   after
+cortex    unreadable     alive        <- attributed by its foreground process
+rovo      dead           alive        <- a LIVE worker had read as agent-free
+muse      dead           alive
+gemini    dead           alive
+claude    dead           dead         <- unchanged: herdr's registry is authoritative
+```
+
+The `before` column is what HEAD produced on that same live pane, and `rovo`, `muse`, and `gemini` are why the harness name could not be the rule: the earlier guard pinned `cortex` alone, so three other harnesses still read a running worker as agent-free - `dead` being the one value the relaunch verifier acts on.
+`claude` and `codex` stay `dead` here because for a harness Herdr DOES integrate with its registry remains authoritative, and no claude agent is registered in that pane.
+
+Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
+The relaunch verifier is the highest-severity consumer: it previously read this live worker as `dead` and would have relaunched over the worktree it still owns; it now reads `alive` and refuses, and reads a genuinely stopped worker as `dead` and proceeds.
+A coverage read that fails entirely resolves to `unknown` without consulting the process fallback, so the failure mode is refusal rather than substituting evidence for a coverage question that went unanswered.
+That resolution is itself silent, because the predicate carrying it is polled by every lifecycle verb; the operator sees the condition once, in the `unreadable` verdict each caller names in its refusal.
+
+### Lifecycle control: attributed by process, proven live
+
+An honest registry read stops the lying but leaves every verb refusing a worker nobody can attribute, so the adapter attributes an uncovered harness's pane from its foreground process through `pane process-info`, read via the shared vocabulary in `bin/fm-harness-process-lib.sh`.
+Verified 2026-09-10 on Herdr 0.8.2 against the same live cortex pane:
+
+```
+$ herdr pane process-info --pane w16:p2 --session default
+{"result":{"process_info":{"pane_id":"w16:p2","shell_pid":3073,
+  "foreground_process_group_id":4983,
+  "foreground_processes":[{"pid":4983,"name":"cortex","argv0":"cortex"}]}}}
+```
+
+That pane then read `alive` where the registry read alone said `unreadable`.
+Only the two positive verdicts are trusted - a verified harness process is `alive`, a pane proven to hold nothing but an idle shell is agent-free - and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+The agent-free verdict is the one that can close a tab and clear the relaunch gate, and a shell-looking process name alone does not establish it: a worker suspended with Ctrl+Z or still inside its launch line presents a single foreground `bash`.
+It therefore additionally requires `fm_backend_herdr_pane_idle_shell_sample`, one sample of the same childless-idle-shell proof the pane-close paths depend on rather than the retrying `fm_backend_herdr_pane_idle_shell_pid` wrapper, because this read is polled; a pane that cannot pass that sample stays `unknown`.
+`rovo` (`comm=rovo`, [rovo.md](rovo.md)) and `muse` (`muse-bin`/`muse-bin-<version>`, [muse.md](muse.md)) are already carried by the shared name vocabulary, so they are attributable alongside `cortex`.
+`gemini` is not: its CLI is a node bundle reporting `MainThread` and the interpreter path with the identity only in the script argument, so no process name attributes it and its panes read `unknown` - an honest refusal rather than lifecycle control.
+
+`tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end, on a host with a real Herdr server and an installed `cortex`:
+
+```
+FM_CORTEX_HERDR_LIFECYCLE_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh
+```
+
+It provisions an isolated non-default `fm-lab-` session through `bin/fm-herdr-lab.sh`, launches a REAL Cortex Code worker into it, and asserts the whole sequence; run 2026-09-10 on Herdr 0.8.2, all cases green:
+
+```
+ok - an empty pane recorded as cortex reads agent-free from its shell process
+ok - real cortex: the pane's foreground process attributes the worker
+ok - a live cortex worker reads alive even though agent get cannot see it
+ok - interrupt delivers to a live cortex worker and leaves the endpoint intact
+ok - exit actually stops the cortex worker and the pane returns to agent-free
+ok - relaunch cleared the endpoint gate
+ok - the cortex lifecycle verbs are available and the endpoint survived every one
+```
+
+The guard asserts that Herdr still answers `agent_not_found` for that worker, so the fallback can never be silently untested by a future build that starts registering cortex.
+`tests/fm-herdr-integration-coverage-live-e2e.test.sh` is the companion guard over the coverage read itself and needs no opt-in: it runs by default wherever `herdr` and `jq` are installed.
+The empty-pane case is the divergence that keeps the rest from being vacuous: the same pane, same session, same recorded harness, differing only in whether a cortex process runs, must classify differently.
+Relaunch is asserted at its endpoint gate rather than to completion, because that gate is what the blind read broke; a full relaunch additionally drives worktree acquisition, which fails in the guard's synthetic home for reasons unrelated to this classifier.
 
 This is no longer asserted only against a canned Herdr CLI.
 It was re-verified against a **real Herdr 0.8.2 server** with a real Cortex Code v1.1.84 worker and a real claude worker spawned into the same isolated lab session at the same moment, both idle at their composers and both demonstrably alive by pane read.
@@ -176,6 +259,8 @@ $ herdr agent list --session <lab>
 ```
 
 ### The guard, both directions
+
+These readings are the coverage guard measured on its own, before the process-attribution fallback above was added; `unreadable` is where a blind read stopped, not where a cortex pane stops today.
 
 ```
 cortex  no harness arg   -> dead          <- the hazard, if a consumer is left unthreaded
@@ -199,7 +284,7 @@ error: task ctx1's endpoint reads 'unreadable' rather than a positively classifi
 state; refusing to send a lifecycle command into an unattributed endpoint
 ```
 
-So on Herdr, cortex still has no lifecycle CONTROL - that is Herdr's detection gap to close - but every path that could act destructively on the blind read refuses instead.
+At that stage every path that could act destructively on the blind read refused instead, which removed the hazard without giving cortex lifecycle CONTROL on Herdr; the process-attribution fallback recorded above is what turned those refusals into working control.
 
 ### Steering: the consumer that did not refuse safely
 
@@ -250,8 +335,8 @@ All Herdr work ran in an isolated non-`default` lab session provisioned and torn
 Recorded because an earlier revision of this file listed these as pending, and a reader outside this fleet would otherwise plan around follow-up work that no longer exists.
 
 - **Lifecycle control is done**, not pending.
-  cortex is in `fm_control_harness_supported` (`bin/fm-control-lib.sh`) and its interrupt and exit mechanics are wired, with the full verb set verified end to end on tmux.
-  What is still missing is Herdr-side *detection*, which is Herdr's to ship - see "Backend liveness: Herdr" above - and not outstanding firstmate lifecycle work.
+  cortex is in `fm_control_harness_supported` (`bin/fm-control-lib.sh`) and its interrupt and exit mechanics are wired, with the full verb set verified end to end on tmux and on Herdr.
+  Herdr still ships no cortex *detection*, which is Herdr's to close, but firstmate no longer waits on it: the process-attribution fallback under "Backend liveness: Herdr" above supplies the endpoint verdict those verbs need.
 - **Steering a cortex worker on Herdr is fixed and verified live.**
   See "Backend liveness: Herdr"; this was the one silent failure in the set.
 - `--no-auto-update` removed from the launch template and its rationale corrected.

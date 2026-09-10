@@ -86,6 +86,14 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Shared harness process-name vocabulary (bin/fm-harness-process-lib.sh), the
+# same one the tmux adapter classifies its pane processes with. This adapter uses
+# it for the process-attribution fallback that answers for a pane whose harness
+# herdr's build has no integration for, so the two backends can never disagree
+# about what a given process name means.
+# shellcheck source=bin/fm-harness-process-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-harness-process-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -378,11 +386,10 @@ fm_backend_herdr_workspace_label() {
 # fm_backend_herdr_version_check, which is intentionally session-independent
 # (reads only .client.* fields).
 fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
-  local session=$1 rc=0 err failed_bin selected_bin client_bin=herdr
+  local session=$1 rc=0 err failed_bin selected_bin client_bin
   shift
-  if [ "${FM_BACKEND_HERDR_CLIENT_SESSION:-}" = "$session" ]; then
-    client_bin=$(fm_backend_herdr_bin)
-  fi
+  fm_backend_herdr_client_bin "$session"
+  client_bin=$FM_BACKEND_HERDR_CLIENT_BIN
   # stderr is buffered (stdout streams untouched) so a protocol_mismatch
   # refusal can be recognized and retried once on a compatible client; see
   # "client selection" below. A failed command's stderr is replayed verbatim.
@@ -438,6 +445,27 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 # PATH-first client.
 fm_backend_herdr_bin() {
   printf '%s' "${FM_BACKEND_HERDR_BIN:-herdr}"
+}
+
+# fm_backend_herdr_client_bin: the single owner of "which herdr executable
+# answers for <session>", published in FM_BACKEND_HERDR_CLIENT_BIN.
+#
+# The selection above is scoped to ONE session, so the selected binary may only
+# be used for that session; every other session starts from the PATH-first
+# client. Any read that JUSTIFIES another read - notably the integration
+# coverage that decides whether an `agent get` answer carries information - has
+# to resolve the same way, or one build can answer the query while a different
+# build declares its coverage, and a live worker whose build ships no
+# integration is then classified agent-free from a build that does.
+#
+# Written to a variable rather than printed because fm_backend_herdr_cli is on
+# every herdr call path and a command substitution here would fork per call.
+fm_backend_herdr_client_bin() {  # <session> -> sets FM_BACKEND_HERDR_CLIENT_BIN
+  if [ "${FM_BACKEND_HERDR_CLIENT_SESSION:-}" = "${1-}" ]; then
+    FM_BACKEND_HERDR_CLIENT_BIN=${FM_BACKEND_HERDR_BIN:-herdr}
+  else
+    FM_BACKEND_HERDR_CLIENT_BIN=herdr
+  fi
 }
 
 # fm_backend_herdr_client_candidates: every distinct executable named herdr on
@@ -1979,6 +2007,138 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   [ "$presence" = dead ]
 }
 
+# --- integration coverage ----------------------------------------------------
+#
+# Herdr's agent read carries information about a harness only when its INSTALLED
+# BUILD ships an integration for that harness. For any other harness `agent get`
+# answers agent_not_found for a live worker exactly as it does for an empty
+# pane, so reading that response as agent-free proof would let callers stop,
+# relaunch into, or close a running worker.
+#
+# That is a general property of this backend, not a fact about one harness, so
+# the covered set is read from what herdr itself reports rather than pinned to a
+# harness name here. A name pinned in firstmate would go stale in both
+# directions: silently wrong the day herdr adds an integration, and silently
+# unsafe the day firstmate adds a harness herdr has never heard of.
+#
+# Verified on herdr 0.8.2 (2026-09-10): `integration status` exits 0 and prints
+# one `<name>: <state> (<path>)` line per integration the build knows. That is
+# the only surface read: a second acceptance path parsing `integration list`
+# usage text would double the ways a herdr release can silently change the
+# covered set, and the usage text is the more fragile of the two.
+#
+# INSTALL STATE IS DELIBERATELY IGNORED, because it is not what makes the read
+# honest. Verified empirically on the same build: `integration status` reported
+# every integration "not installed" while a live claude pane still reported
+# `"agent":"claude","agent_status":"done"`, so herdr registers agents it
+# launches whether or not the harness-side hook file is present. Coverage is the
+# question; installation is a different one.
+
+# fm_backend_herdr_integration_names: the integration names the herdr build that
+# answers for <session> knows, one per line. Prints nothing when the surface
+# yields no usable set, which the caller must treat as coverage unreadable
+# rather than as proof of no coverage.
+#
+# The session is threaded in so the coverage is read from the SAME client that
+# answered the `agent get` it justifies (fm_backend_herdr_client_bin). Reading
+# it from an unrelated build is how a live worker gets classified agent-free:
+# one build answers agent_not_found because it ships no integration for the
+# harness, while another declares that harness covered.
+#
+# The read is NOT memoized. Every production caller reaches it inside a command
+# substitution (the watcher poll in bin/fm-control.sh's wait_agent_state,
+# bin/fm-watch.sh, bin/fm-crew-state.sh), so a shell global could never carry a
+# memo across calls anyway, and a memo that is documented but never hit is worse
+# than none. The cost is one extra `integration status` fork per blind agent
+# read, alongside the `pane process-info` call that read already makes.
+#
+# An integration row is accepted only when it carries that integration's own
+# hook PATH in parentheses (a parenthesized value containing a `/`), which is
+# what distinguishes a row from any other
+# `Word: text` line herdr might print (an `Error: ...` line accepted as a name
+# would make an unreadable surface look readable, and coverage that looks
+# readable resolves an uncovered harness to "provably no integration" - the
+# unsafe direction). A rendering that drops the path yields no names at all,
+# which resolves to refusal.
+fm_backend_herdr_integration_names() {  # <session>
+  fm_backend_herdr_client_bin "${1-}"
+  "$FM_BACKEND_HERDR_CLIENT_BIN" integration status 2>/dev/null \
+    | sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\):[[:space:]][^(]*([^)]*\/[^)]*)[[:space:]]*$/\1/p'
+}
+
+# fm_backend_herdr_integration_covers: 0 when the installed build ships an
+# integration for <harness-family>, 1 when it provably ships none, and 2 when
+# herdr's own coverage could not be read at all - three outcomes the caller must
+# keep apart, because only the middle one is proof.
+fm_backend_herdr_integration_covers() {  # <session> <harness-family>
+  local session=${1-} harness=${2-} names integration
+  [ -n "$harness" ] || return 2
+  names=$(fm_backend_herdr_integration_names "$session")
+  [ -n "$names" ] || return 2
+  # pi-signed is firstmate's signed launch of the SAME pi agent and shares pi's
+  # extension surface (bin/fm-control-lib.sh's wiring paths, and fm-spawn.sh's
+  # shared extension supervision model), so herdr's `pi` integration covers it.
+  # ONLY an established equivalence belongs here: marking a harness covered on a
+  # guess is the unsafe direction, so a harness whose mapping is merely
+  # plausible is left uncovered and its reads refuse.
+  case "$harness" in
+    pi-signed) integration=pi ;;
+    *) integration=$harness ;;
+  esac
+  printf '%s\n' "$names" | grep -qxF "$integration"
+}
+
+# fm_backend_herdr_pane_process_state: attribute <pane_id> from its FOREGROUND
+# PROCESS rather than from herdr's agent registry, printing agent|shell|other.
+#
+# This is the independent source lifecycle control needs on a pane whose harness
+# herdr has no integration for. Making the registry read honest stops it lying,
+# but honesty alone leaves every verb refusing a worker nobody can attribute; the
+# verbs need a signal that positively identifies what is running. `pane
+# process-info` is that signal, and it is the same CLASS of evidence the tmux
+# adapter has always used - a kernel process name, not a rendered surface - so it
+# is read through the one shared classifier (bin/fm-harness-process-lib.sh)
+# rather than a second copy of the harness vocabulary.
+#
+# Verified on herdr 0.8.2 against a live Cortex Code worker: `pane process-info
+# --pane <pane>` reported foreground_processes[0].name = "cortex" for the same
+# pane whose `agent get` answered agent_not_found.
+#
+# A harness whose live process name says nothing about its identity - gemini,
+# whose CLI is a node bundle reporting comm=MainThread and the interpreter path
+# - is simply not attributable here. Its pane folds to `other` and resolves
+# `unknown`, so every verb refuses it honestly rather than acting on a guess.
+#
+# Prints nothing when the response cannot be trusted: a failed call, a body that
+# is not this pane's process info, or no usable foreground process name. The
+# caller must treat that as no evidence, never as absence.
+fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|other
+  local session=$1 pane=$2 info records
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || return 1
+  # The foreground process group is what owns the tty, so its entries are what a
+  # lifecycle key would actually reach. Any entry naming a verified harness is
+  # enough for `agent`, matching the tmux adapter's own either-source rule.
+  #
+  # Each process is carried as ONE `<name><TAB><argv0>` record. Two independent
+  # lists would let a process reporting a name but no argv0 shift every later
+  # argv0 onto the wrong process, so a name would be classified against a
+  # stranger's argv0.
+  records=$(printf '%s' "$info" | jq -er '
+    [.result.process_info.foreground_processes[]?
+      | ((.name // "") | tostring) as $name
+      | (((.argv0 // (.argv[0]?)) // "") | tostring) as $argv0
+      | select(($name | length) > 0 or ($argv0 | length) > 0)
+      | $name + "\t" + $argv0]
+    | select(length > 0) | join("\n")
+  ' 2>/dev/null) || return 1
+  [ -n "$records" ] || return 1
+  fm_harness_process_state_from_records "$records"
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
 # dead|no-agent|live|unknown, purely from the JSON body of two read-only
 # calls - never from process exit status, since a business-logic "not found"
@@ -2014,15 +2174,86 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # The optional third argument is the pane's VERIFIED HARNESS FAMILY
 # (bin/fm-control-lib.sh's fm_control_harness_family), and it exists because
 # agent_not_found only means "agent-free" for a harness herdr's installed build
-# actually integrates with. cortex is not one of them, so a live cortex worker
-# answers agent_not_found exactly like an empty restored pane does, and reading
-# that as no-agent would let the callers below stop, relaunch into, or close a
-# running worker. For cortex that response therefore resolves to `unknown` - the
-# honest verdict - so every caller that needs POSITIVE agent-free proof refuses.
-# A caller that passes no harness gets the harness-blind classification
-# unchanged, and no other harness's verdict is affected.
+# actually integrates with. For any harness it does not, a LIVE worker answers
+# agent_not_found exactly like an empty restored pane does, and reading that as
+# no-agent would let the callers below stop, relaunch into, or close a running
+# worker. Such a harness is therefore never classified from that response alone.
+#
+# Which harnesses those are is NOT decided here: it is read from herdr's own
+# reported coverage by fm_backend_herdr_integration_covers above, so no harness
+# name is pinned in firstmate and the rule holds for a harness added on either
+# side later. A caller that passes no harness gets the harness-blind
+# classification unchanged.
+#
+# That coverage read has THREE outcomes and they stay three here, because
+# collapsing any two of them substitutes evidence for a question nobody
+# answered:
+#
+#   covered   - herdr's own registry is authoritative for this harness, so
+#               agent_not_found is real proof and the pane is `no-agent`. The
+#               process fallback never runs; it has nothing to add and could
+#               only contradict a build that can see the agent.
+#   uncovered - PROVEN to ship no integration for this harness, so
+#               agent_not_found carries no information. This is the only case
+#               the process fallback may run, and the only case it was built
+#               for.
+#   unreadable - herdr's coverage could not be read at all, so which of the two
+#               above applies is itself unknown. Only evidence that holds for
+#               EVERY harness may resolve this, and exactly one kind does: a
+#               pane proven to hold nothing but a childless idle shell has no
+#               agent in it whatever harness was asked about, so it is
+#               `no-agent`. Anything else is `unknown`.
+#
+#               The process NAME is deliberately not consulted here. It would
+#               answer a harness question with evidence never established as
+#               relevant to it: on a build whose coverage surface simply failed
+#               to parse, a claude pane sharing a workspace with a cortex
+#               process would answer `alive` for claude. Not knowing whether a
+#               harness is covered is exactly when a positive verdict must not
+#               be manufactured from weaker evidence.
+#
+#               The agent-free half must stay reachable, though. This surface is
+#               verified on herdr 0.8.2, and the backend supports builds back to
+#               protocol 14 whose `integration status` may not exist or may
+#               render differently; refusing everything there would take exit,
+#               interrupt, relaunch, husk replacement and teardown away from the
+#               whole fleet at once on a configuration the docs still claim to
+#               support.
+#
+# On the uncovered path the registry read is not the last word, because refusing
+# every verb for an unattributable worker would leave lifecycle control
+# unavailable rather than merely honest. fm_backend_herdr_pane_process_state
+# attributes the pane from its foreground process instead, and only its two
+# POSITIVE verdicts are trusted: a verified harness process makes the pane `live`,
+# a pane proven to hold nothing but an idle shell is genuinely `no-agent`, and
+# anything unreadable or unattributable stays `unknown` so no verb fires on
+# uncertainty.
+#
+# The two positive verdicts are NOT symmetric, and the agent-free one is the
+# dangerous half: `no-agent` renders as `dead`, which licenses `tab close` in
+# fm_backend_herdr_create_task and clears fm-spawn's relaunch endpoint gate, so
+# a wrong one closes or relaunches over a live worker. A shell-looking process
+# NAME is far too weak to carry that - a worker suspended with Ctrl+Z, or still
+# inside its `cd ... && env ... <harness> ...` launch line, presents exactly one
+# foreground `bash`. The agent-free verdict therefore additionally demands the
+# childless-idle-shell proof, the same boundary bin/fm-herdr-session-cleanup.sh
+# requires before closing a pane; without it the pane stays `unknown` and every
+# verb refuses.
+#
+# It demands the SINGLE SAMPLE (fm_backend_herdr_pane_idle_shell_sample), not
+# the retrying fm_backend_herdr_pane_idle_shell_pid wrapper. This function is
+# polled - bin/fm-control.sh's wait_agent_state runs it every FM_CONTROL_POLL
+# for the whole exit wait, and bin/fm-watch.sh runs it unattended per sweep - so
+# one read has to cost one bounded read. The retrying wrapper spends up to
+# FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS process-info calls with sleeps between
+# them, which is affordable for the deliberate one-shot close operations it was
+# written for and is not affordable here. The retry only ever converted a
+# transient prompt helper from `unknown` into `no-agent`; losing it costs one
+# poll of extra refusal on a path whose callers already poll, and the safety
+# direction is unchanged, since a sample that does not positively prove a
+# childless idle shell still yields `unknown`.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
-  local session=$1 pane_id=$2 harness=${3:-} out code presence status
+  local session=$1 pane_id=$2 harness=${3:-} out code presence status process
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -2034,10 +2265,40 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    case "$code:$harness" in
-      agent_not_found:cortex) printf 'unknown' ;;
-      agent_not_found:*) printf 'no-agent' ;;
-      *) printf 'unknown' ;;
+    if [ "$code" != agent_not_found ]; then
+      printf 'unknown'
+      return 0
+    fi
+    if [ -z "$harness" ]; then
+      printf 'no-agent'
+      return 0
+    fi
+    fm_backend_herdr_integration_covers "$session" "$harness"
+    case $? in
+      0)
+        printf 'no-agent'
+        ;;
+      1)
+        process=$(fm_backend_herdr_pane_process_state "$session" "$pane_id") || process=
+        case "$process" in
+          agent) printf 'live' ;;
+          shell)
+            if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null 2>&1; then
+              printf 'no-agent'
+            else
+              printf 'unknown'
+            fi
+            ;;
+          *) printf 'unknown' ;;
+        esac
+        ;;
+      *)
+        if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null 2>&1; then
+          printf 'no-agent'
+        else
+          printf 'unknown'
+        fi
+        ;;
     esac
     return 0
   fi

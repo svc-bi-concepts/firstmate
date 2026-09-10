@@ -283,9 +283,31 @@ A structurally gone pane becomes `missing`, a restored agent-less shell becomes 
 Unlike tmux process-name inspection, native registration can classify Pi without guessing from a generic interpreter name.
 
 That agent-free reading holds only for a harness the installed Herdr build integrates with.
-For one it does not, `agent get` answers `agent_not_found` for a live worker exactly as it does for an empty pane, so callers pass the task's recorded harness family and such a harness resolves to `unknown` instead: husk replacement, the duplicate-launch guards, and every lifecycle verb then refuse rather than act on a blind read, while the steering doorbell still rings.
+For one it does not, `agent get` answers `agent_not_found` for a live worker exactly as it does for an empty pane, so callers pass the task's recorded harness family and such a harness is never classified from that response alone: husk replacement, the duplicate-launch guards, and every lifecycle verb would otherwise act on a blind read.
 A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
-`cortex` is the adapter this applies to today, verified live on a real server; [`verification/cortex.md`](verification/cortex.md) owns that evidence, and the same Herdr-side gap remains open and unguarded for `rovo` ([`verification/rovo.md`](verification/rovo.md)).
+Which harnesses those are is read from Herdr's own reported integration coverage rather than pinned to a harness name in firstmate, so the rule holds for a harness added on either side later.
+The covered set is read from `integration status` alone, accepting only rows that carry that integration's own hook path, so a line of any other shape cannot be mistaken for an integration name.
+The read has three outcomes and they stay three: covered leaves Herdr's own registry verdict standing, PROVABLY uncovered is the one case the process-name fallback below may run, and a coverage read that fails at all never consults that fallback.
+Collapsing the last two would answer a harness question with evidence never established as relevant to it: on a build whose coverage surface simply failed to parse, a `claude` pane sharing a workspace with a `cortex` process would answer `alive` for `claude`.
+Not knowing whether a harness is covered is exactly when a positive verdict must not be manufactured from weaker evidence.
+An unreadable read is still resolved by the one kind of evidence that holds for every harness: a pane proven to hold nothing but a childless idle shell has no agent in it whatever harness was asked about, so it reads agent-free, and anything else reads `unknown`.
+That matters because this surface is verified on Herdr 0.8.2 while the backend supports builds back to protocol 14, whose `integration status` may be absent or rendered differently; refusing outright there would take exit, interrupt, relaunch, husk replacement and teardown away from the whole fleet at once.
+That resolution is silent, because the coverage read sits under a predicate every lifecycle verb polls, so a diagnostic printed there would repeat once per poll iteration rather than once per operator command.
+The condition still reaches the operator through the `unreadable` verdict, which every caller names in the refusal it prints once.
+The coverage is read from the same client that answered the `agent get` it justifies, so a session whose client was reselected after a protocol mismatch cannot have one build answer the query while another declares its coverage.
+Install state is deliberately ignored: Herdr registers agents it launches whether or not the harness-side hook file is present, so coverage is the question and installation is a different one.
+On Herdr 0.8.2 the uncovered adapters are `cortex`, `rovo`, `muse`, and `gemini`; [`verification/cortex.md`](verification/cortex.md) and [`verification/rovo.md`](verification/rovo.md) own the live evidence.
+Of those, `cortex`, `rovo`, and `muse` get working lifecycle control from the fallback below, because the shared process-name vocabulary already matches them.
+`gemini` does not: its CLI is a node bundle whose process reports `MainThread` and the interpreter path, with the identity only in the script argument, so no process name attributes it and its panes read `unknown`.
+That is an honest refusal rather than control, and it is unchanged from before this rule existed.
+
+An honest registry read alone would leave every lifecycle verb refusing a worker nobody can attribute, so on the provably-uncovered path the adapter attributes the pane from its foreground process instead, through `pane process-info`.
+That is the same class of evidence the tmux adapter has always used - a kernel process name, not a rendered surface - and both backends read it through the one shared vocabulary in [`../bin/fm-harness-process-lib.sh`](../bin/fm-harness-process-lib.sh) so they cannot disagree about what a name means.
+Only the two positive verdicts are trusted: a verified harness process makes the pane `alive`, a pane PROVEN to hold nothing but an idle shell is genuinely agent-free, and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+The two are not symmetric, and the agent-free half is the dangerous one: it renders as `dead`, which licenses husk replacement and clears the relaunch endpoint gate, while a suspended worker or one still inside its launch line presents a single foreground `bash`.
+It therefore additionally demands the same childless-idle-shell proof the pane-close paths require, and a pane that cannot pass that proof stays `unknown`.
+It takes ONE sample of that proof rather than the retrying wrapper the deliberate close paths use, because this read is polled and a polled predicate has to cost one bounded read; the retry only ever converted a transient prompt helper from `unknown` into agent-free, so dropping it costs a poll of extra refusal and changes no safety direction.
+This is what makes interrupt, exit, and relaunch available for `cortex`, `rovo`, and `muse` rather than merely honest about them.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.
@@ -354,11 +376,12 @@ tests/fm-backend-herdr-workspace-per-home-e2e.test.sh
 tests/fm-backend-herdr-launcher-workspace-e2e.test.sh
 tests/fm-backend-herdr-presentation-e2e.test.sh
 tests/fm-backend-herdr-eventwait-smoke.test.sh
+tests/fm-herdr-integration-coverage-live-e2e.test.sh
 tests/fm-herdr-session-cleanup.test.sh
 tests/fm-herdr-session-cleanup-e2e.test.sh
 tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Real Herdr tests use the named lab helper and default-session tripwire.
+Real Herdr tests use the named lab helper and default-session tripwire; the integration-coverage guard needs neither, because it reads `integration status` from the installed build alone and touches no server, session, or pane.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) records the active version, CLI, projection, event, and lifecycle evidence without task-specific chronology.

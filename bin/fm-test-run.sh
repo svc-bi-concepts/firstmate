@@ -326,6 +326,8 @@ family_for_basename() {
     fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|fm-rovo-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
+    fm-herdr-integration-coverage-live-e2e.test.sh|\
+    fm-cortex-herdr-lifecycle-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-branch-live-e2e.test.sh|\
     fm-pi-branch-responsiveness-live-e2e.test.sh|\
     fm-pi-primary-live-e2e.test.sh|fm-pi-codex-native.test.sh|fm-omp-primary-live-e2e.test.sh|\
@@ -619,6 +621,7 @@ tests/fm-codex-continuity-live-e2e.test.sh 21
 tests/fm-composer-matrix-live-e2e.test.sh 23
 tests/fm-control-relaunch.test.sh 48210
 tests/fm-control.test.sh 37798
+tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh 23
 tests/fm-cursor-harness.test.sh 30103
 tests/fm-cursor-primary-live-e2e.test.sh 21
 tests/fm-cursor-primary.test.sh 54947
@@ -636,6 +639,7 @@ tests/fm-guard-stale-banner.test.sh 11218
 tests/fm-harness-adapter-instructions-live-e2e.test.sh 20
 tests/fm-harness-adapter-references.test.sh 55
 tests/fm-harness-liveness-drift-live-e2e.test.sh 21
+tests/fm-herdr-integration-coverage-live-e2e.test.sh 23
 tests/fm-herdr-session-cleanup.test.sh 6704
 tests/fm-herdr-submit-confirm-live-e2e.test.sh 23
 tests/fm-herdr-version-floor-live-e2e.test.sh 23

@@ -950,7 +950,12 @@ MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 # passed, immediately before the close marker binds to it, so any refusal
 # leaves the record byte-identical.
 if [ "$TEARDOWN_LEGACY_PENDING" = 1 ]; then
-  TEARDOWN_LEGACY_ENDPOINT=$(fm_backend_agent_state "$BACKEND" "$T")
+  # The recorded harness family goes in because this classifier is blind to a
+  # harness the backend has no integration for, and without it a LIVE worker on
+  # such a harness reads `dead` here - the one value that licenses tearing the
+  # record down (bin/fm-backend.sh's fm_backend_agent_state owns that rule).
+  TEARDOWN_LEGACY_ENDPOINT=$(fm_backend_agent_state "$BACKEND" "$T" \
+    "$(fm_control_harness_family "$(fm_meta_get "$META" harness)" 2>/dev/null || true)")
   case "$TEARDOWN_LEGACY_ENDPOINT" in
     dead|missing) ;;
     *)

@@ -217,7 +217,7 @@ OUT=$(run_control "$ID" exit) || {
   fail "exit against a live cortex worker must succeed: $OUT"
 }
 case "$OUT" in
-  *stopped*|*already-stopped*) : ;;
+  *stopped*) : ;;
   *) fail "exit must report a stop for a live cortex worker, got: $OUT" ;;
 esac
 [ -d "$WT" ] || fail "exit must never remove the task's local copy"
@@ -265,7 +265,9 @@ else
   pass "real herdr: relaunch succeeded end to end against the stopped cortex endpoint"
 fi
 
-# A live worker must still be refused, so the gate is not simply always-allow.
+# The gate is not simply always-allow: section 1 above asserts `alive` for the
+# live worker, which is the reading that refuses it. All that remains here is
+# that no verb in this sequence destroyed the endpoint it operated on.
 lab_run pane get "$PANE_ID" >/dev/null 2>&1 \
   || fail "no control verb may remove the endpoint"
 pass "real herdr: the cortex lifecycle verbs are available and the endpoint survived every one"

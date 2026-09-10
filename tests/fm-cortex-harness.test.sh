@@ -318,32 +318,50 @@ test_cortex_herdr_agent_read_is_not_agent_free_proof() {
   pass "backends/herdr.sh: an agent_not_found read is not agent-free proof for any harness herdr does not integrate with"
 }
 
-test_herdr_coverage_is_derived_not_pinned() {
-  local fb out noise
-  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
-  mkdir -p "$TMP_ROOT/herdr-coverage"
-  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-coverage")
-
-  # A DIFFERENT herdr, reachable only through FM_BACKEND_HERDR_BIN and never on
-  # PATH, whose status surface is prose rather than integration rows. It carries
-  # both the narrowed-parse case and the configured-binary case below.
-  noise="$TMP_ROOT/herdr-coverage/noise-herdr"
-  cat > "$noise" <<'SH'
+# make_herdr_alt_fakebin: a herdr executable at <path> that answers pane get and
+# agent get exactly like the PATH fake, but reports <integration-status-body> as
+# its own coverage. It is never placed on PATH, so it is reachable only through
+# the client selection FM_BACKEND_HERDR_BIN/FM_BACKEND_HERDR_CLIENT_SESSION
+# express - which is what makes it usable to tell the two apart.
+make_herdr_alt_fakebin() {  # <path> <integration-status-body>
+  local path=$1
+  cat > "$path" <<SH
 #!/usr/bin/env bash
 set -u
-case "${1:-}" in
-  --version) printf 'herdr 9.9.9-configured\n'; exit 0 ;;
+case "\${1:-}" in
+  --version) printf 'herdr 9.9.9-selected\n'; exit 0 ;;
 esac
-case "${1:-} ${2:-}" in
-  "integration status")
-    printf 'Error: could not reach the herdr server\n'
-    printf 'Note: start one with herdr server\n'
-    exit 0
-    ;;
+case "\${1:-} \${2:-}" in
+  "integration status") printf '%s' "$2"; exit 0 ;;
+  "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
+  "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "\${3:-}" ;;
+  "agent get") printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "\${3:-}" ;;
 esac
 exit 0
 SH
-  chmod +x "$noise"
+  chmod +x "$path"
+}
+
+test_herdr_coverage_is_derived_not_pinned() {
+  local fb out dir noise covering
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  dir="$TMP_ROOT/herdr-coverage"
+  mkdir -p "$dir"
+  fb=$(make_herdr_agentless_fakebin "$dir")
+
+  # A herdr whose status surface is prose rather than integration rows.
+  noise="$dir/noise-herdr"
+  make_herdr_alt_fakebin "$noise" \
+    'Error: could not reach the herdr server
+Note: start one with herdr server
+'
+  # A herdr that DOES ship a cortex integration, so its coverage disagrees with
+  # the PATH build's.
+  covering="$dir/covering-herdr"
+  make_herdr_alt_fakebin "$covering" \
+    'claude: not installed (/home/u/.claude/hooks/herdr-agent-state.sh)
+cortex: not installed (/home/u/.cortex/hooks/herdr-agent-state.sh)
+'
 
   # The covered set comes from herdr, so a build that DOES integrate with a
   # harness must make that harness's read informative again with no firstmate
@@ -356,49 +374,68 @@ SH
   [ "$out" = dead ] \
     || fail "a build that integrates with cortex must make its read informative, got '$out'"
 
+  # Coverage must come from the client that ANSWERED the agent read it
+  # justifies. The client selection is scoped to one session, so a selection
+  # made for another session must not reach this one: `agent get` for fmtest
+  # goes to the PATH build (no cortex integration, so its agent_not_found proves
+  # nothing), and reading coverage from the selected build instead would declare
+  # cortex covered and classify a live worker agent-free.
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$covering" \
+    FM_BACKEND_HERDR_CLIENT_SESSION=another-session bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "coverage from a client selected for a DIFFERENT session must not justify this session's read, got '$out'"
+
+  # The same selection made FOR this session is the one that counts: then both
+  # the agent read and its coverage come from that build, which does ship cortex.
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$covering" \
+    FM_BACKEND_HERDR_CLIENT_SESSION=fmtest bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = dead ] \
+    || fail "the client selected for this session must supply both the agent read and its coverage, got '$out'"
+
   # Only rows carrying an integration's own hook path are names. A line of any
   # other `Word: text` shape must not be captured, because a captured stranger
   # makes an otherwise unreadable surface look readable - and a readable surface
   # resolves an uncovered harness to "provably no integration", the one unsafe
   # direction.
-  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_integration_names' "$ROOT")
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" \
+    FM_BACKEND_HERDR_CLIENT_SESSION=fmtest bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_integration_names fmtest' "$ROOT")
   [ -z "$out" ] \
     || fail "a status surface carrying no integration rows must yield no names, got '$out'"
-  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" \
+    FM_BACKEND_HERDR_CLIENT_SESSION=fmtest bash -c '
     . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
   [ "$out" = unreadable ] \
     || fail "a status surface of prose must refuse rather than claim cortex uncovered-and-agent-free, got '$out'"
 
-  # The warning's whole job is to name the herdr whose coverage could not be
-  # read, so it must probe the CONFIGURED binary - the one the coverage read
-  # itself used - not whatever `herdr` PATH happens to resolve to.
-  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>&1 >/dev/null)
-  case "$out" in
-    *9.9.9-configured*) : ;;
-    *) fail "the coverage warning must name the configured herdr's version, got '$out'" ;;
-  esac
-
   # With NO readable coverage at all, the safe direction is refusal for every
-  # harness, and it must warn rather than degrade quietly.
+  # harness.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
     . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>/dev/null)
   [ "$out" = unreadable ] \
     || fail "an unreadable coverage read must refuse rather than claim agent-free, got '$out'"
+
+  # And it must do so SILENTLY. This read is a predicate every lifecycle verb
+  # polls, so anything written here is written once per poll iteration: an
+  # operator running one `exit` against a degraded coverage surface would get a
+  # run of identical lines. Counting is the assertion - a presence check would
+  # pass the very defect this guards.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>&1 >/dev/null)
-  case "$out" in
-    *"could not read herdr's own integration coverage"*claude*) : ;;
-    *) fail "an unreadable coverage read must warn naming the harness, got '$out'" ;;
-  esac
+    . "$0/bin/backends/herdr.sh"
+    for _ in 1 2 3 4 5; do fm_backend_herdr_agent_state fmtest:w1:p1 cortex; done' \
+    "$ROOT" 2>&1 >/dev/null | grep -c . || true)
+  [ "$out" = 0 ] \
+    || fail "five polled reads against an unreadable coverage surface must emit nothing, got $out line(s)"
+
   # A harness-less caller keeps its documented behavior even then: it never had
   # a coverage question to ask.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
     . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
   [ "$out" = dead ] \
     || fail "a harness-less caller must not be changed by a coverage read, got '$out'"
-  pass "backends/herdr.sh: coverage is derived from herdr, parses only integration rows, and refuses when unreadable"
+  pass "backends/herdr.sh: coverage is read from the answering client, parses only integration rows, and refuses silently when unreadable"
 }
 
 test_herdr_blind_pane_is_attributed_by_its_process() {
@@ -531,6 +568,19 @@ test_herdr_process_info_is_parsed_per_process() {
   # to prevent.
   out=$(process_state '[{"pid":12,"name":"MainThread","argv0":"/home/u/.local/node/bin/node","argv":["/home/u/.local/node/bin/node","/home/u/src/server.js"]}]')
   [ "$out" = other ] || fail "a bare node interpreter must stay unattributed, got '$out'"
+
+  # herdr hands over argv as an ARRAY, and it must be consumed as one. Joining
+  # it into a command line first cannot be split back apart when the script path
+  # contains a space, so a live worker installed under such a path would go
+  # unattributed and every lifecycle verb would refuse it.
+  out=$(process_state '[{"pid":13,"name":"MainThread","argv0":"/usr/bin/node","argv":["/usr/bin/node","/Users/a b/.local/bin/gemini","-y"],"cmdline":"/usr/bin/node /Users/a b/.local/bin/gemini -y"}]')
+  [ "$out" = agent ] \
+    || fail "a gemini script path containing a space must still attribute, got '$out'"
+  # The array is authoritative over any flattened rendering beside it: a cmdline
+  # that reads like gemini cannot attribute a process whose argv is not.
+  out=$(process_state '[{"pid":14,"name":"MainThread","argv0":"/usr/bin/node","argv":["/usr/bin/node","/home/u/src/server.js"],"cmdline":"/usr/bin/node /home/u/.local/bin/gemini -y"}]')
+  [ "$out" = other ] \
+    || fail "a flattened cmdline must not outrank the argv array, got '$out'"
 
   # A body that is not this pane's process info is no evidence at all.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w9:p9","foreground_processes":[{"name":"bash"}]}}}' \

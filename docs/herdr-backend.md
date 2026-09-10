@@ -287,7 +287,9 @@ For one it does not, `agent get` answers `agent_not_found` for a live worker exa
 A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
 Which harnesses those are is read from Herdr's own reported integration coverage rather than pinned to a harness name in firstmate, so the rule holds for a harness added on either side later.
 The covered set is read from `integration status` alone, accepting only rows that carry that integration's own hook path, so a line of any other shape cannot be mistaken for an integration name.
-A coverage read that fails at all resolves to `unknown`, with a warning naming the harness and the Herdr version on each such read.
+A coverage read that fails at all resolves to `unknown`, silently: the coverage read sits under a predicate every lifecycle verb polls, so a diagnostic printed there would repeat once per poll iteration rather than once per operator command.
+The condition still reaches the operator through the `unreadable` verdict, which every caller names in the refusal it prints once.
+The coverage is read from the same client that answered the `agent get` it justifies, so a session whose client was reselected after a protocol mismatch cannot have one build answer the query while another declares its coverage.
 Install state is deliberately ignored: Herdr registers agents it launches whether or not the harness-side hook file is present, so coverage is the question and installation is a different one.
 On Herdr 0.8.2 the uncovered adapters are `cortex`, `rovo`, `muse`, and `gemini`; [`verification/cortex.md`](verification/cortex.md) and [`verification/rovo.md`](verification/rovo.md) own the live evidence.
 

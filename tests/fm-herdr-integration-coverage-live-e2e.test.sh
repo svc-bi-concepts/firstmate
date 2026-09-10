@@ -49,8 +49,13 @@ fm_backend_source herdr || fail "fm_backend_source herdr failed"
 VERSION=$(herdr --version 2>/dev/null | head -1)
 [ -n "$VERSION" ] || VERSION="herdr version unknown"
 
+# The coverage read is scoped to the client that answers for a session, so this
+# guard names one. With no client selected for it, that resolves to the
+# PATH-first herdr - the binary this guard is measuring.
+SESSION=default
+
 # 1. The real binary must yield a coverage set at all.
-NAMES=$(fm_backend_herdr_integration_names)
+NAMES=$(fm_backend_herdr_integration_names "$SESSION")
 [ -n "$NAMES" ] || fail "$VERSION reported no integration coverage at all; the adapter would refuse every agent read (check 'herdr integration status' output shape)"
 pass "coverage reads from the real binary ($VERSION): $(printf '%s' "$NAMES" | tr '\n' ' ')"
 
@@ -61,7 +66,7 @@ FAMILIES="pi pi-signed omp claude cortex codex opencode grok kimi cursor gemini 
 COVERED=
 UNCOVERED=
 for fam in $FAMILIES; do
-  fm_backend_herdr_integration_covers "$fam"
+  fm_backend_herdr_integration_covers "$SESSION" "$fam"
   case $? in
     0) COVERED="$COVERED $fam" ;;
     1) UNCOVERED="$UNCOVERED $fam" ;;

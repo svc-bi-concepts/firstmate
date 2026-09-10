@@ -396,11 +396,10 @@ fm_backend_herdr_workspace_label() {
 # fm_backend_herdr_version_check, which is intentionally session-independent
 # (reads only .client.* fields).
 fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
-  local session=$1 rc=0 err failed_bin selected_bin client_bin=herdr
+  local session=$1 rc=0 err failed_bin selected_bin client_bin
   shift
-  if [ "${FM_BACKEND_HERDR_CLIENT_SESSION:-}" = "$session" ]; then
-    client_bin=$(fm_backend_herdr_bin)
-  fi
+  fm_backend_herdr_client_bin "$session"
+  client_bin=$FM_BACKEND_HERDR_CLIENT_BIN
   # stderr is buffered (stdout streams untouched) so a protocol_mismatch
   # refusal can be recognized and retried once on a compatible client; see
   # "client selection" below. A failed command's stderr is replayed verbatim.
@@ -456,6 +455,27 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 # PATH-first client.
 fm_backend_herdr_bin() {
   printf '%s' "${FM_BACKEND_HERDR_BIN:-herdr}"
+}
+
+# fm_backend_herdr_client_bin: the single owner of "which herdr executable
+# answers for <session>", published in FM_BACKEND_HERDR_CLIENT_BIN.
+#
+# The selection above is scoped to ONE session, so the selected binary may only
+# be used for that session; every other session starts from the PATH-first
+# client. Any read that JUSTIFIES another read - notably the integration
+# coverage that decides whether an `agent get` answer carries information - has
+# to resolve the same way, or one build can answer the query while a different
+# build declares its coverage, and a live worker whose build ships no
+# integration is then classified agent-free from a build that does.
+#
+# Written to a variable rather than printed because fm_backend_herdr_cli is on
+# every herdr call path and a command substitution here would fork per call.
+fm_backend_herdr_client_bin() {  # <session> -> sets FM_BACKEND_HERDR_CLIENT_BIN
+  if [ "${FM_BACKEND_HERDR_CLIENT_SESSION:-}" = "${1-}" ]; then
+    FM_BACKEND_HERDR_CLIENT_BIN=${FM_BACKEND_HERDR_BIN:-herdr}
+  else
+    FM_BACKEND_HERDR_CLIENT_BIN=herdr
+  fi
 }
 
 # fm_backend_herdr_client_candidates: every distinct executable named herdr on
@@ -2024,10 +2044,16 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # launches whether or not the harness-side hook file is present. Coverage is the
 # question; installation is a different one.
 
-# fm_backend_herdr_integration_names: the integration names the installed herdr
-# build knows, one per line. Prints nothing when the surface yields no usable
-# set, which the caller must treat as coverage unreadable rather than as proof
-# of no coverage.
+# fm_backend_herdr_integration_names: the integration names the herdr build that
+# answers for <session> knows, one per line. Prints nothing when the surface
+# yields no usable set, which the caller must treat as coverage unreadable
+# rather than as proof of no coverage.
+#
+# The session is threaded in so the coverage is read from the SAME client that
+# answered the `agent get` it justifies (fm_backend_herdr_client_bin). Reading
+# it from an unrelated build is how a live worker gets classified agent-free:
+# one build answers agent_not_found because it ships no integration for the
+# harness, while another declares that harness covered.
 #
 # The read is NOT memoized. Every production caller reaches it inside a command
 # substitution (the watcher poll in bin/fm-control.sh's wait_agent_state,
@@ -2044,10 +2070,9 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # readable resolves an uncovered harness to "provably no integration" - the
 # unsafe direction). A rendering that drops the path yields no names at all,
 # which resolves to refusal.
-fm_backend_herdr_integration_names() {
-  local bin
-  bin=$(fm_backend_herdr_bin)
-  "$bin" integration status 2>/dev/null \
+fm_backend_herdr_integration_names() {  # <session>
+  fm_backend_herdr_client_bin "${1-}"
+  "$FM_BACKEND_HERDR_CLIENT_BIN" integration status 2>/dev/null \
     | sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\):[[:space:]][^(]*([^)]*\/[^)]*)[[:space:]]*$/\1/p'
 }
 
@@ -2055,10 +2080,10 @@ fm_backend_herdr_integration_names() {
 # integration for <harness-family>, 1 when it provably ships none, and 2 when
 # herdr's own coverage could not be read at all - three outcomes the caller must
 # keep apart, because only the middle one is proof.
-fm_backend_herdr_integration_covers() {  # <harness-family>
-  local harness=${1-} names integration
+fm_backend_herdr_integration_covers() {  # <session> <harness-family>
+  local session=${1-} harness=${2-} names integration
   [ -n "$harness" ] || return 2
-  names=$(fm_backend_herdr_integration_names)
+  names=$(fm_backend_herdr_integration_names "$session")
   [ -n "$names" ] || return 2
   # pi-signed is firstmate's signed launch of the SAME pi agent and shares pi's
   # extension surface (bin/fm-control-lib.sh's wiring paths, and fm-spawn.sh's
@@ -2082,27 +2107,26 @@ fm_backend_herdr_integration_covers() {  # <harness-family>
 #
 # When herdr's coverage cannot be read at all, this reports blind - the safe
 # direction, since every caller then refuses instead of acting on a read it
-# cannot justify - and warns naming the harness and the herdr version rather
-# than degrading quietly. The warning REPEATS, once per read: every caller
-# reaches this inside a command substitution, so no shell global can carry a
-# warn-once flag across calls, and a poll loop against an unreadable coverage
-# surface prints it on each iteration.
+# cannot justify.
 #
-# The version is probed through fm_backend_herdr_bin, the same resolution the
-# coverage read itself uses, so under FM_BACKEND_HERDR_BIN - the configuration
-# under which a coverage read is most likely to fail in the first place - the
-# diagnostic names the binary actually consulted rather than a different herdr
-# on PATH.
-fm_backend_herdr_agent_read_is_blind() {  # <harness-family>
-  local harness=${1-} version
+# It is SILENT, and deliberately so. This is a predicate on the agent-read path,
+# which every lifecycle verb polls (bin/fm-control.sh's wait_agent_state runs it
+# every FM_CONTROL_POLL for the whole exit wait, and bin/fm-watch.sh runs it per
+# sweep), so anything printed here is printed once per poll iteration rather
+# than once per operator command. A degraded coverage surface is exactly the
+# state this path is built to tolerate, so it is the state that would produce
+# the longest run of identical lines. The condition still reaches the operator:
+# it resolves to `unreadable`, and every caller names that verdict in the
+# refusal it prints once (bin/fm-control.sh, bin/fm-spawn.sh's relaunch gate,
+# bin/fm-teardown.sh).
+fm_backend_herdr_agent_read_is_blind() {  # <session> <harness-family>
+  local session=${1-} harness=${2-}
   [ -n "$harness" ] || return 1
-  fm_backend_herdr_integration_covers "$harness"
+  fm_backend_herdr_integration_covers "$session" "$harness"
   case $? in
     0) return 1 ;;
     1) return 0 ;;
   esac
-  version=$("$(fm_backend_herdr_bin)" --version 2>/dev/null | head -1)
-  echo "warning: could not read herdr's own integration coverage (${version:-herdr version unknown}), so an agent read for harness '$harness' cannot be justified; treating it as uninformative and refusing to act on it" >&2
   return 0
 }
 
@@ -2125,15 +2149,23 @@ fm_backend_herdr_agent_read_is_blind() {  # <harness-family>
 # Gemini is the one harness this cannot answer from a name: its CLI is a node
 # bundle, so a live worker reports comm=MainThread and argv0=the interpreter and
 # only the script ARGUMENT carries the identity. `pane process-info` returns the
-# full argv array (and cmdline) per process, so the same structural rule the
-# tmux adapter applies is applied here, as a separate positive-only signal after
-# the name fold rather than as a special case inside the shared vocabulary.
+# full argv ARRAY per process, so bin/fm-gemini-lib.sh's structural rule is fed
+# those fields directly, as a separate positive-only signal after the name fold
+# rather than as a special case inside the shared vocabulary.
+#
+# The array is never joined into a command line first. Flattening is the exact
+# hazard that library exists to avoid: a script path containing a space cannot
+# be split back out of a flattened string, so a live worker under such a path
+# would go unattributed. Neither the pre-flattened `cmdline` field nor a
+# /proc-based re-read of the same pid is consulted, because both are strictly
+# lower-fidelity views of the argv already on the wire.
 #
 # Prints nothing when the response cannot be trusted: a failed call, a body that
 # is not this pane's process info, or no usable foreground process name. The
 # caller must treat that as no evidence, never as absence.
 fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|other
-  local session=$1 pane=$2 info records state argv_records record pid args
+  local session=$1 pane=$2 info records state count index token
+  local -a argv=()
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -2158,33 +2190,28 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|ot
   [ -n "$records" ] || return 1
   state=$(fm_harness_process_state_from_records "$records")
   if [ "$state" != agent ]; then
-    argv_records=$(printf '%s' "$info" | jq -r '
-      [.result.process_info.foreground_processes[]?
-        | (((.pid // "") | tostring)
-           + "\t"
-           + (((.cmdline // ((.argv // []) | join(" "))) // "") | tostring))]
-      | join("\n")
-    ' 2>/dev/null) || argv_records=
-    while IFS= read -r record; do
-      pid=${record%%$'\t'*}
-      if [ "$pid" = "$record" ]; then
-        args=
-      else
-        args=${record#*$'\t'}
-      fi
-      # Linux exposes argv NUL-delimited, which preserves a script path
-      # containing whitespace that a flattened command line cannot represent;
-      # the flattened form is the fallback where /proc is absent. Positive
-      # evidence only - neither signal can move a verdict away from `agent`.
-      if [ -n "$pid" ] && fm_gemini_pid_is_gemini "$pid"; then
+    count=$(printf '%s' "$info" | jq -r '
+      .result.process_info.foreground_processes
+      | if type == "array" then length else 0 end
+    ' 2>/dev/null) || count=0
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    index=0
+    # Positive evidence only: this can turn `shell` or `other` into `agent`, and
+    # can never move a verdict the other way.
+    while [ "$index" -lt "$count" ]; do
+      argv=()
+      while IFS= read -r -d '' token; do
+        argv+=("$token")
+      done < <(printf '%s' "$info" | jq -j --argjson i "$index" '
+        .result.process_info.foreground_processes[$i].argv
+        | if type == "array" then .[] | tostring + "\u0000" else empty end
+      ' 2>/dev/null)
+      if [ "${#argv[@]}" -gt 0 ] && fm_gemini_argv_is_gemini "${argv[@]}"; then
         state=agent
         break
       fi
-      if [ -n "$args" ] && fm_gemini_args_are_gemini "$args"; then
-        state=agent
-        break
-      fi
-    done <<< "$argv_records"
+      index=$((index + 1))
+    done
   fi
   printf '%s' "$state"
 }
@@ -2270,7 +2297,7 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   if [ -n "$code" ]; then
     if [ "$code" != agent_not_found ]; then
       printf 'unknown'
-    elif ! fm_backend_herdr_agent_read_is_blind "$harness"; then
+    elif ! fm_backend_herdr_agent_read_is_blind "$session" "$harness"; then
       printf 'no-agent'
     else
       process=$(fm_backend_herdr_pane_process_state "$session" "$pane_id") || process=

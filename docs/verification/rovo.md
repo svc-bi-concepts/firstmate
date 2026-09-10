@@ -208,18 +208,25 @@ The cause is on Herdr's side, not firstmate's: `fm_backend_herdr_pane_agent_stat
 Herdr has not shipped agent detection for rovo, so the classifier that recovery logic depends on (`fm_backend_agent_state`'s `alive`/`dead` distinction, and `fm_backend_herdr_tab_is_husk`'s reuse of it) cannot tell a live rovo pane apart from an empty one on the herdr backend.
 
 This is now guarded rather than merely recorded, and not by a rovo-specific patch.
-`fm_backend_herdr_pane_agent_state` derives the set of harnesses Herdr can see from Herdr's own reported integration coverage, so `agent_not_found` resolves to `unknown` for any harness that enumeration omits - rovo included - and every caller needing positive agent-free proof refuses instead of acting.
-That never invents an `alive` verdict, which is the false positive this record previously judged unsafe to risk: the honest verdict is `unreadable`, and refusal is its only consequence.
-Re-verified 2026-09-10 against Herdr 0.8.2 on a live pane, where `fm_backend_agent_state herdr <target> rovo` returned `unreadable` where it previously returned `dead`:
+The verdict is reached in two stages, and only the first of them was measured in this run.
+
+Stage one is coverage: `fm_backend_herdr_pane_agent_state` derives the set of harnesses Herdr can see from Herdr's own reported integration coverage, so `agent_not_found` stops counting as agent-free proof for any harness that enumeration omits, rovo included.
+That is what the enumeration below establishes, and it is measured:
 
 ```
 $ herdr integration status | cut -d: -f1 | tr '\n' ' '
 pi omp claude codex copilot devin droid kimi opencode kilo hermes qodercli qwen cursor mastracode antigravity-cli grok
-$ # before: dead (a live worker read as agent-free)   after: unreadable (refuses)
 ```
 
-`backend=herdr` therefore remains usable for launching a rovo crewmate/scout, and a live rovo worker is no longer at risk of being torn down or relaunched over as an agent-less husk; automatic dead/husk RECOVERY for rovo stays unavailable until Herdr ships rovo detection or `bin/backends/herdr.sh` gains an independent process-based fallback the way `bin/backends/tmux.sh` already has.
-`/exit` returned the pane to an idle shell prompt rather than closing it, unlike tmux which closes the whole window, so a `dead` reading after exit would be the textually correct verdict for an agent-less-but-present pane; under the coverage rule an uncovered harness reports `unreadable` there too, which is the safe direction and costs only an automatic recovery this record already lists as unavailable.
+Measured 2026-09-10 against Herdr 0.8.2 on a live pane, `fm_backend_agent_state herdr <target> rovo` returned `unreadable` where it previously returned `dead` - that is, the coverage stage alone already removed the false agent-free reading this record judged unsafe.
+
+Stage two is process attribution, added in the same change and NOT exercised by this run: on that blind path the adapter reads the pane's foreground process through `pane process-info` and classifies it with the shared vocabulary in `bin/fm-harness-process-lib.sh`.
+The independent process-based fallback this record previously listed as missing therefore exists, and rovo is attributable by it: this file's own ancestry evidence above records `comm=rovo`, which the classifier's existing `*rovo*` arm matches.
+By inspection of that code path a live rovo pane now resolves `alive` rather than `unreadable`, and a pane holding only an idle shell resolves `dead` once the childless-idle-shell proof confirms it; `docs/verification/cortex.md` records the equivalent transition measured live for cortex.
+Re-measuring it for rovo needs a live rovo worker on Herdr and has not been done, so it is recorded here as inferred rather than verified.
+
+`backend=herdr` therefore remains usable for launching a rovo crewmate/scout, a live rovo worker is not at risk of being torn down or relaunched over as an agent-less husk, and automatic dead/husk recovery is no longer gated on Herdr shipping rovo detection.
+`/exit` returned the pane to an idle shell prompt rather than closing it, unlike tmux which closes the whole window, so a `dead` reading after exit is the textually correct verdict for an agent-less-but-present pane, and that is what the idle-shell proof produces on the process-attribution path.
 It is only the ready/busy/idle misclassification while rovo was actually running that was the real finding above.
 
 ## Skill-loading interop gap (documented, not fixed)

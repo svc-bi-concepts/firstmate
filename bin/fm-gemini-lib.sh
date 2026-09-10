@@ -43,60 +43,30 @@ fm_gemini_path_is_gemini() {  # <path>
   return 1
 }
 
-# True when process $1 has Gemini's structural argv evidence. Linux exposes
-# argv as NUL-delimited fields, which preserves a script path containing spaces
-# that `ps -o args=` necessarily flattens into an ambiguous string.
-fm_gemini_pid_is_gemini() {  # <pid>
-  local pid=$1 token argv0='' index=0
-  [ -r "/proc/$pid/cmdline" ] || return 1
-  while IFS= read -r -d '' token; do
-    if [ "$index" -eq 0 ]; then
-      argv0=$token
-      fm_gemini_path_is_gemini "$argv0" && return 0
-      case "${argv0##*/}" in
-        node|node-*|node[0-9]*|MainThread) ;;
-        *) return 1 ;;
-      esac
-    else
-      case "$token" in
-        -*) ;;
-        *) fm_gemini_path_is_gemini "$token" && return 0; return 1 ;;
-      esac
-    fi
-    index=$((index + 1))
-  done < "/proc/$pid/cmdline"
-  return 1
-}
-
-# True when the whitespace-separated command line $1 is a Gemini process.
+# True when the argv FIELDS $1.. are a Gemini process. This is the single owner
+# of the structural rule; every other entry point below is a feeder that turns
+# its own input shape into these fields.
 #
 # Accepted: a command whose own argv[0] is gemini (a future natively-named
 # binary), and an interpreter whose first non-flag argument is Gemini's script
-# or package path.
+# or package path. Node's own options are skipped so
+# `node --max-old-space-size=10000 <script>` - the exact shape the installed
+# launcher execs - still resolves.
 #
 # Rejected: a bare interpreter with no gemini argument, and any command line
 # whose only mention of gemini is a later flag value, a working directory, or a
 # prompt string - only argv[0] and the script argument are ever consulted, so
 # an unrelated command that merely TALKS about gemini never matches.
-fm_gemini_args_are_gemini() {  # <args>
-  local args=$1 argv0 rest token
-  [ -n "$args" ] || return 1
-  args=${args#"${args%%[![:space:]]*}"}
-  argv0=${args%%[[:space:]]*}
+fm_gemini_argv_is_gemini() {  # <argv0> [argv1...]
+  local argv0=${1-} token
+  [ -n "$argv0" ] || return 1
   fm_gemini_path_is_gemini "$argv0" && return 0
   case "${argv0##*/}" in
     node|node-*|node[0-9]*|MainThread) ;;
     *) return 1 ;;
   esac
-  rest=${args#"$argv0"}
-  # The first non-flag token after the interpreter is the script it runs.
-  # Node's own options are skipped so `node --max-old-space-size=10000 <script>`
-  # - the exact shape the installed launcher execs - still resolves.
-  while [ -n "$rest" ]; do
-    rest=${rest#"${rest%%[![:space:]]*}"}
-    [ -n "$rest" ] || break
-    token=${rest%%[[:space:]]*}
-    rest=${rest#"$token"}
+  shift
+  for token in "$@"; do
     case "$token" in
       -*) continue ;;
     esac
@@ -104,4 +74,33 @@ fm_gemini_args_are_gemini() {  # <args>
     return 1
   done
   return 1
+}
+
+# True when process $1 has Gemini's structural argv evidence. Linux exposes
+# argv as NUL-delimited fields, which preserves a script path containing spaces
+# that `ps -o args=` necessarily flattens into an ambiguous string.
+fm_gemini_pid_is_gemini() {  # <pid>
+  local token
+  local -a argv=()
+  [ -r "/proc/$1/cmdline" ] || return 1
+  while IFS= read -r -d '' token; do
+    argv+=("$token")
+  done < "/proc/$1/cmdline"
+  [ "${#argv[@]}" -gt 0 ] || return 1
+  fm_gemini_argv_is_gemini "${argv[@]}"
+}
+
+# True when the whitespace-separated command line $1 is a Gemini process.
+#
+# This is the LOSSY feeder, for platforms that expose only a flattened command
+# line: splitting it back on whitespace cannot recover a script path that
+# contains a space. Callers holding real argv fields must use
+# fm_gemini_argv_is_gemini directly rather than joining them first.
+fm_gemini_args_are_gemini() {  # <args>
+  local args=$1
+  local -a fields=()
+  [ -n "$args" ] || return 1
+  read -ra fields <<< "$args"
+  [ "${#fields[@]}" -gt 0 ] || return 1
+  fm_gemini_argv_is_gemini "${fields[@]}"
 }

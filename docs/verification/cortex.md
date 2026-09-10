@@ -203,7 +203,8 @@ The `before` column is what HEAD produced on that same live pane, and `rovo`, `m
 
 Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
 The relaunch verifier is the highest-severity consumer: it previously read this live worker as `dead` and would have relaunched over the worktree it still owns; it now reads `alive` and refuses, and reads a genuinely stopped worker as `dead` and proceeds.
-A coverage read that fails entirely resolves to `unknown`, warning on each such read with the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
+A coverage read that fails entirely resolves to `unknown`, so the failure mode is refusal rather than a silent return to the blind verdict.
+That resolution is itself silent, because the predicate carrying it is polled by every lifecycle verb; the operator sees the condition once, in the `unreadable` verdict each caller names in its refusal.
 
 ### Lifecycle control: attributed by process, proven live
 

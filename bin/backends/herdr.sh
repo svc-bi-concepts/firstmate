@@ -94,16 +94,6 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-harness-process-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-harness-process-lib.sh"
 
-# Gemini process identity (bin/fm-gemini-lib.sh). The Gemini CLI ships as a node
-# bundle, so a live gemini pane presents comm=MainThread and argv0=the node
-# interpreter and NOTHING about its name says gemini - the identity is carried
-# only by the script argument. It therefore stays a separate structural signal
-# outside the shared name vocabulary, exactly as bin/backends/tmux.sh keeps it,
-# rather than growing the shared classifier a gemini special case it cannot
-# express.
-# shellcheck source=bin/fm-gemini-lib.sh
-. "$FM_BACKEND_HERDR_ROOT/bin/fm-gemini-lib.sh"
-
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -2114,26 +2104,16 @@ fm_backend_herdr_integration_covers() {  # <session> <harness-family>
 # --pane <pane>` reported foreground_processes[0].name = "cortex" for the same
 # pane whose `agent get` answered agent_not_found.
 #
-# Gemini is the one harness this cannot answer from a name: its CLI is a node
-# bundle, so a live worker reports comm=MainThread and argv0=the interpreter and
-# only the script ARGUMENT carries the identity. `pane process-info` returns the
-# full argv ARRAY per process, so bin/fm-gemini-lib.sh's structural rule is fed
-# those fields directly, as a separate positive-only signal after the name fold
-# rather than as a special case inside the shared vocabulary.
-#
-# The array is never joined into a command line first. Flattening is the exact
-# hazard that library exists to avoid: a script path containing a space cannot
-# be split back out of a flattened string, so a live worker under such a path
-# would go unattributed. Neither the pre-flattened `cmdline` field nor a
-# /proc-based re-read of the same pid is consulted, because both are strictly
-# lower-fidelity views of the argv already on the wire.
+# A harness whose live process name says nothing about its identity - gemini,
+# whose CLI is a node bundle reporting comm=MainThread and the interpreter path
+# - is simply not attributable here. Its pane folds to `other` and resolves
+# `unknown`, so every verb refuses it honestly rather than acting on a guess.
 #
 # Prints nothing when the response cannot be trusted: a failed call, a body that
 # is not this pane's process info, or no usable foreground process name. The
 # caller must treat that as no evidence, never as absence.
 fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|other
-  local session=$1 pane=$2 info records state count index token
-  local -a argv=()
+  local session=$1 pane=$2 info records
   info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
   printf '%s' "$info" | jq -e --arg pane "$pane" '
     .result.type == "pane_process_info"
@@ -2156,32 +2136,7 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|ot
     | select(length > 0) | join("\n")
   ' 2>/dev/null) || return 1
   [ -n "$records" ] || return 1
-  state=$(fm_harness_process_state_from_records "$records")
-  if [ "$state" != agent ]; then
-    count=$(printf '%s' "$info" | jq -r '
-      .result.process_info.foreground_processes
-      | if type == "array" then length else 0 end
-    ' 2>/dev/null) || count=0
-    case "$count" in ''|*[!0-9]*) count=0 ;; esac
-    index=0
-    # Positive evidence only: this can turn `shell` or `other` into `agent`, and
-    # can never move a verdict the other way.
-    while [ "$index" -lt "$count" ]; do
-      argv=()
-      while IFS= read -r -d '' token; do
-        argv+=("$token")
-      done < <(printf '%s' "$info" | jq -j --argjson i "$index" '
-        .result.process_info.foreground_processes[$i].argv
-        | if type == "array" then .[] | tostring + "\u0000" else empty end
-      ' 2>/dev/null)
-      if [ "${#argv[@]}" -gt 0 ] && fm_gemini_argv_is_gemini "${argv[@]}"; then
-        state=agent
-        break
-      fi
-      index=$((index + 1))
-    done
-  fi
-  printf '%s' "$state"
+  fm_harness_process_state_from_records "$records"
 }
 
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
@@ -2243,14 +2198,27 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|ot
 #               the process fallback may run, and the only case it was built
 #               for.
 #   unreadable - herdr's coverage could not be read at all, so which of the two
-#               above applies is itself unknown. The pane is `unknown` and every
-#               verb refuses. Reading the foreground process here would answer a
-#               harness question with process evidence that was never
-#               established as relevant to it: on a build whose coverage surface
-#               simply failed to parse, a claude pane sharing a workspace with a
-#               cortex process would answer `alive` for claude. Not knowing
-#               whether a harness is covered is exactly when weaker evidence
-#               must not be substituted.
+#               above applies is itself unknown. Only evidence that holds for
+#               EVERY harness may resolve this, and exactly one kind does: a
+#               pane proven to hold nothing but a childless idle shell has no
+#               agent in it whatever harness was asked about, so it is
+#               `no-agent`. Anything else is `unknown`.
+#
+#               The process NAME is deliberately not consulted here. It would
+#               answer a harness question with evidence never established as
+#               relevant to it: on a build whose coverage surface simply failed
+#               to parse, a claude pane sharing a workspace with a cortex
+#               process would answer `alive` for claude. Not knowing whether a
+#               harness is covered is exactly when a positive verdict must not
+#               be manufactured from weaker evidence.
+#
+#               The agent-free half must stay reachable, though. This surface is
+#               verified on herdr 0.8.2, and the backend supports builds back to
+#               protocol 14 whose `integration status` may not exist or may
+#               render differently; refusing everything there would take exit,
+#               interrupt, relaunch, husk replacement and teardown away from the
+#               whole fleet at once on a configuration the docs still claim to
+#               support.
 #
 # On the uncovered path the registry read is not the last word, because refusing
 # every verb for an unattributable worker would leave lifecycle control
@@ -2325,7 +2293,11 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
         esac
         ;;
       *)
-        printf 'unknown'
+        if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null 2>&1; then
+          printf 'no-agent'
+        else
+          printf 'unknown'
+        fi
         ;;
     esac
     return 0

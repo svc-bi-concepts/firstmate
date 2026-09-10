@@ -222,9 +222,9 @@ $ herdr pane process-info --pane w16:p2 --session default
 That pane then read `alive` where the registry read alone said `unreadable`.
 Only the two positive verdicts are trusted - a verified harness process is `alive`, a pane proven to hold nothing but an idle shell is agent-free - and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
 The agent-free verdict is the one that can close a tab and clear the relaunch gate, and a shell-looking process name alone does not establish it: a worker suspended with Ctrl+Z or still inside its launch line presents a single foreground `bash`.
-It therefore additionally requires `fm_backend_herdr_pane_idle_shell_pid`, the childless-idle-shell proof the pane-close paths already depend on, and a pane that cannot pass it stays `unknown`.
-`gemini` is the one uncovered harness a process NAME cannot attribute, because its CLI is a node bundle reporting `MainThread` and the interpreter path with the identity only in the script argument; `pane process-info` returns the full argv array, so `bin/fm-gemini-lib.sh`'s structural rule is applied to it as a separate positive-only signal, the same way `bin/backends/tmux.sh` uses it.
-`rovo` (`comm=rovo`, [rovo.md](rovo.md)) and `muse` (`muse-bin`/`muse-bin-<version>`, [muse.md](muse.md)) are already carried by the shared name vocabulary, so all four uncovered harnesses are attributable.
+It therefore additionally requires `fm_backend_herdr_pane_idle_shell_sample`, one sample of the same childless-idle-shell proof the pane-close paths depend on rather than the retrying `fm_backend_herdr_pane_idle_shell_pid` wrapper, because this read is polled; a pane that cannot pass that sample stays `unknown`.
+`rovo` (`comm=rovo`, [rovo.md](rovo.md)) and `muse` (`muse-bin`/`muse-bin-<version>`, [muse.md](muse.md)) are already carried by the shared name vocabulary, so they are attributable alongside `cortex`.
+`gemini` is not: its CLI is a node bundle reporting `MainThread` and the interpreter path with the identity only in the script argument, so no process name attributes it and its panes read `unknown` - an honest refusal rather than lifecycle control.
 
 `tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end.
 It provisions an isolated non-default `fm-lab-` session through `bin/fm-herdr-lab.sh`, launches a REAL Cortex Code worker into it, and asserts the whole sequence; run 2026-09-10 on Herdr 0.8.2, all cases green:

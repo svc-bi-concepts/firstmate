@@ -222,6 +222,9 @@ test_cortex_pane_process_classifies_as_a_live_agent() {
 # FM_TEST_HERDR_PROCESS_INFO, when set, is the JSON body `pane process-info`
 # answers with, so a test can drive the process-attribution fallback with a real
 # response shape instead of stubbing the function that parses it.
+# FM_TEST_HERDR_AGENT_STATUS, when set, makes `agent get` answer with a
+# REGISTERED agent carrying that status instead of agent_not_found, so a test
+# can drive herdr's own positive answer.
 make_herdr_agentless_fakebin() {  # <dir> -> echoes fakebin dir
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -247,7 +250,13 @@ case "${1:-} ${2:-}" in
   "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
   "pane process-info") printf '%s\n' "${FM_TEST_HERDR_PROCESS_INFO:-}" ;;
-  "agent get") printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}" ;;
+  "agent get")
+    if [ -n "${FM_TEST_HERDR_AGENT_STATUS:-}" ]; then
+      printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$FM_TEST_HERDR_AGENT_STATUS"
+    else
+      printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}"
+    fi
+    ;;
 esac
 exit 0
 SH
@@ -343,7 +352,7 @@ SH
 }
 
 test_herdr_coverage_is_derived_not_pinned() {
-  local fb out dir noise covering cortex_pane
+  local fb out dir noise covering cortex_pane h
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
   dir="$TMP_ROOT/herdr-coverage"
   mkdir -p "$dir"
@@ -447,13 +456,55 @@ cortex: not installed (/home/u/.cortex/hooks/herdr-agent-state.sh)
   [ "$out" = unreadable ] \
     || fail "an unreadable coverage read must refuse rather than fall back, got '$out'"
 
+  # But an unreadable read must NOT refuse everything either. `integration
+  # status` is verified on herdr 0.8.2 while this backend supports builds back
+  # to protocol 14, so a build that lacks the subcommand or renders it
+  # differently would otherwise lose exit, interrupt, relaunch, husk replacement
+  # and teardown for the whole fleet at once. The one kind of evidence that
+  # holds whatever harness was asked about still resolves: a pane PROVEN to hold
+  # nothing but a childless idle shell has no agent in it.
+  local shell_pid fifo idle_pane
+  fifo="$TMP_ROOT/herdr-coverage/idle.fifo"
+  rm -f "$fifo"
+  mkfifo "$fifo"
+  # A real bash blocked in the `read` builtin: comm is a recognized shell, it
+  # sleeps, and the builtin spawns no child - exactly the shape the proof wants.
+  bash -c 'read -r _ < "$1"' _ "$fifo" &
+  shell_pid=$!
+  # Let it reach the blocking read before the proof samples the process table.
+  while ! ps -p "$shell_pid" -o stat= 2>/dev/null | grep -q '^[SI]'; do
+    ps -p "$shell_pid" >/dev/null 2>&1 || break
+  done
+  idle_pane="{\"result\":{\"type\":\"pane_process_info\",\"process_info\":{\"pane_id\":\"w1:p1\",\"shell_pid\":$shell_pid,\"foreground_process_group_id\":$shell_pid,\"foreground_processes\":[{\"pid\":$shell_pid,\"name\":\"bash\",\"argv0\":\"-bash\"}]}}}"
+  for h in cortex claude; do
+    out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_PROCESS_INFO="$idle_pane" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 "$1"' "$ROOT" "$h" 2>/dev/null)
+    [ "$out" = dead ] \
+      || fail "a proven childless idle shell must read agent-free for $h even when coverage is unreadable, got '$out'"
+  done
+  printf 'x\n' > "$fifo" 2>/dev/null || true
+  wait "$shell_pid" 2>/dev/null || true
+  rm -f "$fifo"
+
   # A harness-less caller keeps its documented behavior even then: it never had
   # a coverage question to ask.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
   [ "$out" = dead ] \
     || fail "a harness-less caller must not be changed by a coverage read, got '$out'"
-  pass "backends/herdr.sh: the three coverage outcomes stay distinct, and only a proven-uncovered harness reaches the process fallback"
+
+  # herdr's own POSITIVE answer is authoritative on its own and must never
+  # become coverage-dependent: a registered agent is `alive` whether or not
+  # `integration status` can be read at all. Without this pin, a future change
+  # could route the positive answer through the coverage helpers and take
+  # liveness away from the whole fleet on a build that cannot report coverage.
+  for h in cortex claude; do
+    out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_AGENT_STATUS=working \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 "$1"' "$ROOT" "$h" 2>/dev/null)
+    [ "$out" = alive ] \
+      || fail "a registered agent must read alive for $h regardless of coverage, got '$out'"
+  done
+  pass "backends/herdr.sh: the three coverage outcomes stay distinct, and an unreadable read still resolves a proven idle shell"
 }
 
 test_herdr_blind_pane_is_attributed_by_its_process() {
@@ -599,35 +650,18 @@ test_herdr_process_info_is_parsed_per_process() {
   [ "$out" = other ] \
     || fail "an argv0-less process must not inherit its neighbour's argv0, got '$out'"
 
-  # Gemini is the one uncovered harness no process NAME can attribute: the CLI is
-  # a node bundle, so a live worker reports MainThread and the interpreter path
-  # and only the script argument carries the identity.
+  # A harness whose live process name carries no identity is simply not
+  # attributable here. A gemini worker is a node bundle reporting MainThread and
+  # the interpreter path, so it stays `other` and its pane refuses honestly
+  # rather than being attributed from a guess.
   out=$(process_state '[{"pid":11,"name":"MainThread","argv0":"/home/u/.local/node/bin/node","argv":["/home/u/.local/node/bin/node","/home/u/.local/bin/gemini","-y"]}]')
-  [ "$out" = agent ] || fail "a live gemini node bundle must attribute the pane, got '$out'"
-  # And the same interpreter without Gemini's script argument must NOT: a bare
-  # node is a stranger, and claiming it would be the widening this rule exists
-  # to prevent.
-  out=$(process_state '[{"pid":12,"name":"MainThread","argv0":"/home/u/.local/node/bin/node","argv":["/home/u/.local/node/bin/node","/home/u/src/server.js"]}]')
-  [ "$out" = other ] || fail "a bare node interpreter must stay unattributed, got '$out'"
-
-  # herdr hands over argv as an ARRAY, and it must be consumed as one. Joining
-  # it into a command line first cannot be split back apart when the script path
-  # contains a space, so a live worker installed under such a path would go
-  # unattributed and every lifecycle verb would refuse it.
-  out=$(process_state '[{"pid":13,"name":"MainThread","argv0":"/usr/bin/node","argv":["/usr/bin/node","/Users/a b/.local/bin/gemini","-y"],"cmdline":"/usr/bin/node /Users/a b/.local/bin/gemini -y"}]')
-  [ "$out" = agent ] \
-    || fail "a gemini script path containing a space must still attribute, got '$out'"
-  # The array is authoritative over any flattened rendering beside it: a cmdline
-  # that reads like gemini cannot attribute a process whose argv is not.
-  out=$(process_state '[{"pid":14,"name":"MainThread","argv0":"/usr/bin/node","argv":["/usr/bin/node","/home/u/src/server.js"],"cmdline":"/usr/bin/node /home/u/.local/bin/gemini -y"}]')
-  [ "$out" = other ] \
-    || fail "a flattened cmdline must not outrank the argv array, got '$out'"
+  [ "$out" = other ] || fail "a node bundle must stay unattributed by process name, got '$out'"
 
   # A body that is not this pane's process info is no evidence at all.
   out=$(PATH="$fb:$PATH" FM_TEST_HERDR_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w9:p9","foreground_processes":[{"name":"bash"}]}}}' \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_process_state fmtest w1:p1 || printf refused' "$ROOT")
   [ "$out" = refused ] || fail "a response for another pane must carry no verdict, got '$out'"
-  pass "backends/herdr.sh: pane process-info is attributed per process, including gemini's argv-only identity"
+  pass "backends/herdr.sh: pane process-info is attributed per process, by name only"
 }
 
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {

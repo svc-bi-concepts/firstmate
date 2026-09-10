@@ -203,7 +203,7 @@ The `before` column is what HEAD produced on that same live pane, and `rovo`, `m
 
 Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
 The relaunch verifier is the highest-severity consumer: it previously read this live worker as `dead` and would have relaunched over the worktree it still owns; it now reads `alive` and refuses, and reads a genuinely stopped worker as `dead` and proceeds.
-A coverage read that fails entirely resolves to `unknown`, with one warning naming the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
+A coverage read that fails entirely resolves to `unknown`, warning on each such read with the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
 
 ### Lifecycle control: attributed by process, proven live
 
@@ -218,7 +218,11 @@ $ herdr pane process-info --pane w16:p2 --session default
 ```
 
 That pane then read `alive` where the registry read alone said `unreadable`.
-Only the two positive verdicts are trusted - a verified harness process is `alive`, a pane holding nothing but an idle shell is agent-free - and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+Only the two positive verdicts are trusted - a verified harness process is `alive`, a pane proven to hold nothing but an idle shell is agent-free - and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+The agent-free verdict is the one that can close a tab and clear the relaunch gate, and a shell-looking process name alone does not establish it: a worker suspended with Ctrl+Z or still inside its launch line presents a single foreground `bash`.
+It therefore additionally requires `fm_backend_herdr_pane_idle_shell_pid`, the childless-idle-shell proof the pane-close paths already depend on, and a pane that cannot pass it stays `unknown`.
+`gemini` is the one uncovered harness a process NAME cannot attribute, because its CLI is a node bundle reporting `MainThread` and the interpreter path with the identity only in the script argument; `pane process-info` returns the full argv array, so `bin/fm-gemini-lib.sh`'s structural rule is applied to it as a separate positive-only signal, the same way `bin/backends/tmux.sh` uses it.
+`rovo` (`comm=rovo`, [rovo.md](rovo.md)) and `muse` (`muse-bin`/`muse-bin-<version>`, [muse.md](muse.md)) are already carried by the shared name vocabulary, so all four uncovered harnesses are attributable.
 
 `tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end.
 It provisions an isolated non-default `fm-lab-` session through `bin/fm-herdr-lab.sh`, launches a REAL Cortex Code worker into it, and asserts the whole sequence; run 2026-09-10 on Herdr 0.8.2, all cases green:

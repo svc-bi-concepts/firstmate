@@ -19,9 +19,15 @@
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/fm-session-lock-lib.sh"
 
-# fm_harness_process_state_from_names: fold a whole foreground process group into
-# one verdict, given newline-separated names and (optionally) newline-separated
-# argv0 values. Prints agent|shell|other.
+# fm_harness_process_state_from_records: fold a whole foreground process group
+# into one verdict, given one `<name><TAB><argv0>` record per process, newline
+# separated. Either field may be empty. Prints agent|shell|other.
+#
+# One record per process, never two parallel lists: a process that reports a
+# name but no argv0 would shift every later argv0 onto the wrong process, so a
+# name would be classified against a stranger's argv0 - silently, and in both
+# directions (a bystander inheriting a harness argv0 reads `agent`, and the real
+# harness stripped of its own argv0 reads `other`).
 #
 # `agent` wins over everything: a harness that shells out to a child keeps the
 # harness in the same foreground group, so any entry naming a verified harness
@@ -30,25 +36,23 @@
 # `other` and the callers refuse rather than treating it as agent-free. That
 # asymmetry is deliberate: a wrong `agent` costs a refused verb, while a wrong
 # `shell` licenses closing or relaunching over a live worker.
-fm_harness_process_state_from_names() {  # <names> [argv0s] -> agent|shell|other
-  local names=${1-} argv0s=${2-} name state saw_shell=0 saw_other=0
-  local -a argv0_list=()
-  if [ -n "$argv0s" ]; then
-    while IFS= read -r name; do
-      [ -n "$name" ] && argv0_list+=("$name")
-    done <<< "$argv0s"
-  fi
-  local index=0
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    state=$(fm_harness_classify_process_name "$name" "${argv0_list[index]:-}")
+fm_harness_process_state_from_records() {  # <records> -> agent|shell|other
+  local records=${1-} record name argv0 state saw_shell=0 saw_other=0
+  while IFS= read -r record; do
+    name=${record%%$'\t'*}
+    if [ "$name" = "$record" ]; then
+      argv0=
+    else
+      argv0=${record#*$'\t'}
+    fi
+    [ -n "$name" ] || [ -n "$argv0" ] || continue
+    state=$(fm_harness_classify_process_name "$name" "$argv0")
     case "$state" in
       agent) printf 'agent'; return 0 ;;
       shell) saw_shell=1 ;;
       *) saw_other=1 ;;
     esac
-    index=$((index + 1))
-  done <<< "$names"
+  done <<< "$records"
   if [ "$saw_other" -eq 0 ] && [ "$saw_shell" -eq 1 ]; then
     printf 'shell'
   else

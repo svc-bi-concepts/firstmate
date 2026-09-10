@@ -286,14 +286,18 @@ That agent-free reading holds only for a harness the installed Herdr build integ
 For one it does not, `agent get` answers `agent_not_found` for a live worker exactly as it does for an empty pane, so callers pass the task's recorded harness family and such a harness is never classified from that response alone: husk replacement, the duplicate-launch guards, and every lifecycle verb would otherwise act on a blind read.
 A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
 Which harnesses those are is read from Herdr's own reported integration coverage rather than pinned to a harness name in firstmate, so the rule holds for a harness added on either side later.
-The adapter reads `integration status` first and the `integration list` usage text second, so no single rendered surface is load-bearing, and a coverage read that fails at all resolves to `unknown` with one warning naming the harness and version.
+The covered set is read from `integration status` alone, accepting only rows that carry that integration's own hook path, so a line of any other shape cannot be mistaken for an integration name.
+A coverage read that fails at all resolves to `unknown`, with a warning naming the harness and the Herdr version on each such read.
 Install state is deliberately ignored: Herdr registers agents it launches whether or not the harness-side hook file is present, so coverage is the question and installation is a different one.
 On Herdr 0.8.2 the uncovered adapters are `cortex`, `rovo`, `muse`, and `gemini`; [`verification/cortex.md`](verification/cortex.md) and [`verification/rovo.md`](verification/rovo.md) own the live evidence.
 
 An honest registry read alone would leave every lifecycle verb refusing a worker nobody can attribute, so on that blind path the adapter attributes the pane from its foreground process instead, through `pane process-info`.
 That is the same class of evidence the tmux adapter has always used - a kernel process name, not a rendered surface - and both backends read it through the one shared vocabulary in [`../bin/fm-harness-process-lib.sh`](../bin/fm-harness-process-lib.sh) so they cannot disagree about what a name means.
-Only the two positive verdicts are trusted: a verified harness process makes the pane `alive`, a pane holding nothing but an idle shell is genuinely agent-free, and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
-This is what makes interrupt, exit, and relaunch available for an uncovered harness rather than merely honest about it.
+Only the two positive verdicts are trusted: a verified harness process makes the pane `alive`, a pane PROVEN to hold nothing but an idle shell is genuinely agent-free, and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+The two are not symmetric, and the agent-free half is the dangerous one: it renders as `dead`, which licenses husk replacement and clears the relaunch endpoint gate, while a suspended worker or one still inside its launch line presents a single foreground `bash`.
+It therefore additionally demands the same childless-idle-shell proof the pane-close paths require, and a pane that cannot pass that proof stays `unknown`.
+`gemini` needs one more signal than a name, because its CLI is a node bundle whose process reports `MainThread` and the interpreter path while only the script argument carries the identity; the adapter applies the structural rule in [`../bin/fm-gemini-lib.sh`](../bin/fm-gemini-lib.sh) to the same `pane process-info` response, as a separate positive-only signal exactly as the tmux adapter does.
+This is what makes interrupt, exit, and relaunch available for each of the uncovered harnesses rather than merely honest about them.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

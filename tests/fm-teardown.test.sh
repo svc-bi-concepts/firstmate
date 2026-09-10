@@ -1332,7 +1332,7 @@ test_legacy_record_teardown_refuses_a_harness_herdr_cannot_see() {
   wt_commit "$case_dir" "landed legacy work"
   add_fork_with_pushed_branch "$case_dir"
   # The pane structurally exists and no agent is registered for it, and this
-  # build's integration list omits cortex - exactly the live-worker shape.
+  # build reports no cortex integration - exactly the live-worker shape.
   cat > "$case_dir/fakebin/herdr" <<SH
 #!/usr/bin/env bash
 case "\${1:-} \${2:-}" in

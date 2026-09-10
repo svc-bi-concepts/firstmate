@@ -214,14 +214,14 @@ test_cortex_pane_process_classifies_as_a_live_agent() {
 # integration for, and it is indistinguishable from the same answer for a
 # genuinely empty restored pane.
 #
-# It also serves the two coverage surfaces the adapter derives the covered set
-# from. FM_TEST_HERDR_COVERAGE selects which one answers:
+# It also serves the ONE coverage surface the adapter derives the covered set
+# from. FM_TEST_HERDR_COVERAGE selects whether it answers:
 #   both    - `integration status` answers (the normal case).
-#   list    - only the `integration list` usage text answers, so the fallback
-#             surface alone must carry the verdict.
-#   none    - neither answers, so coverage is unreadable.
-# Driving them apart is the point: a coverage rule that silently depended on one
-# surface would still pass a test that always offered both.
+#   none    - it does not, so coverage is unreadable and every read must refuse.
+#
+# FM_TEST_HERDR_PROCESS_INFO, when set, is the JSON body `pane process-info`
+# answers with, so a test can drive the process-attribution fallback with a real
+# response shape instead of stubbing the function that parses it.
 make_herdr_agentless_fakebin() {  # <dir> -> echoes fakebin dir
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -244,18 +244,9 @@ case "${1:-} ${2:-}" in
     done
     exit 0
     ;;
-  "integration list")
-    [ "$COVERAGE" = none ] || {
-      printf 'herdr integration commands:\n'
-      for n in $FAKE_INTEGRATIONS; do
-        printf '  herdr integration install %s\n' "$n"
-      done
-    }
-    # The real build exits nonzero here: this is usage text, not a query.
-    exit 2
-    ;;
   "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
+  "pane process-info") printf '%s\n' "${FM_TEST_HERDR_PROCESS_INFO:-}" ;;
   "agent get") printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}" ;;
 esac
 exit 0
@@ -328,10 +319,31 @@ test_cortex_herdr_agent_read_is_not_agent_free_proof() {
 }
 
 test_herdr_coverage_is_derived_not_pinned() {
-  local fb out
+  local fb out noise
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
   mkdir -p "$TMP_ROOT/herdr-coverage"
   fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-coverage")
+
+  # A DIFFERENT herdr, reachable only through FM_BACKEND_HERDR_BIN and never on
+  # PATH, whose status surface is prose rather than integration rows. It carries
+  # both the narrowed-parse case and the configured-binary case below.
+  noise="$TMP_ROOT/herdr-coverage/noise-herdr"
+  cat > "$noise" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  --version) printf 'herdr 9.9.9-configured\n'; exit 0 ;;
+esac
+case "${1:-} ${2:-}" in
+  "integration status")
+    printf 'Error: could not reach the herdr server\n'
+    printf 'Note: start one with herdr server\n'
+    exit 0
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$noise"
 
   # The covered set comes from herdr, so a build that DOES integrate with a
   # harness must make that harness's read informative again with no firstmate
@@ -344,23 +356,28 @@ test_herdr_coverage_is_derived_not_pinned() {
   [ "$out" = dead ] \
     || fail "a build that integrates with cortex must make its read informative, got '$out'"
 
-  # Losing the primary surface must not lose the verdict: the usage-text
-  # fallback alone has to carry it, for both a covered and an uncovered harness.
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT")
-  [ "$out" = dead ] \
-    || fail "the integration list fallback must still classify a covered harness, got '$out'"
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT")
-  [ "$out" = unreadable ] \
-    || fail "the integration list fallback must still refuse an uncovered harness, got '$out'"
-  # Assert the divergence itself, so this case cannot go quietly vacuous if both
-  # surfaces stopped answering.
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
+  # Only rows carrying an integration's own hook path are names. A line of any
+  # other `Word: text` shape must not be captured, because a captured stranger
+  # makes an otherwise unreadable surface look readable - and a readable surface
+  # resolves an uncovered harness to "provably no integration", the one unsafe
+  # direction.
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
     . "$0/bin/backends/herdr.sh"; fm_backend_herdr_integration_names' "$ROOT")
+  [ -z "$out" ] \
+    || fail "a status surface carrying no integration rows must yield no names, got '$out'"
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "a status surface of prose must refuse rather than claim cortex uncovered-and-agent-free, got '$out'"
+
+  # The warning's whole job is to name the herdr whose coverage could not be
+  # read, so it must probe the CONFIGURED binary - the one the coverage read
+  # itself used - not whatever `herdr` PATH happens to resolve to.
+  out=$(PATH="$fb:$PATH" FM_BACKEND_HERDR_BIN="$noise" bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>&1 >/dev/null)
   case "$out" in
-    *claude*) : ;;
-    *) fail "the fallback surface must actually yield names, got '$out'" ;;
+    *9.9.9-configured*) : ;;
+    *) fail "the coverage warning must name the configured herdr's version, got '$out'" ;;
   esac
 
   # With NO readable coverage at all, the safe direction is refusal for every
@@ -381,7 +398,7 @@ test_herdr_coverage_is_derived_not_pinned() {
     . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
   [ "$out" = dead ] \
     || fail "a harness-less caller must not be changed by a coverage read, got '$out'"
-  pass "backends/herdr.sh: coverage is derived from herdr, survives losing a surface, and refuses when unreadable"
+  pass "backends/herdr.sh: coverage is derived from herdr, parses only integration rows, and refuses when unreadable"
 }
 
 test_herdr_blind_pane_is_attributed_by_its_process() {
@@ -394,18 +411,27 @@ test_herdr_blind_pane_is_attributed_by_its_process() {
   # for an unattributable worker leaves lifecycle control unavailable rather than
   # merely honest. The pane's foreground process is the source that can attribute
   # it, and only its two POSITIVE verdicts may be trusted.
-  herdr_process_eval() {  # <process-state> <harness>
+  herdr_process_eval() {  # <process-state> <harness> [idle-shell-proof=yes|no]
     PATH="$fb:$PATH" bash -c '
       . "$0/bin/backends/herdr.sh"
-      fm_backend_herdr_pane_process_state() { [ -n "$1" ] && printf "%s" "'"$1"'"; }
+      fm_backend_herdr_pane_process_state() { printf "%s" "'"$1"'"; }
+      fm_backend_herdr_pane_idle_shell_pid() { [ "'"${3:-yes}"'" = yes ] && printf "4242\n"; }
       fm_backend_herdr_agent_state fmtest:w1:p1 "'"$2"'"' "$ROOT"
   }
   out=$(herdr_process_eval agent cortex)
   [ "$out" = alive ] \
     || fail "a cortex pane running a verified harness process must read alive, got '$out'"
-  out=$(herdr_process_eval shell cortex)
+  out=$(herdr_process_eval shell cortex yes)
   [ "$out" = dead ] \
-    || fail "a cortex pane holding only an idle shell is positively agent-free, got '$out'"
+    || fail "a cortex pane proven to hold only an idle shell is positively agent-free, got '$out'"
+  # The agent-free verdict is the one that licenses closing the tab and clears
+  # the relaunch gate, so a shell-looking NAME alone must never carry it: a
+  # worker suspended with Ctrl+Z, or still inside its launch line, presents
+  # exactly one foreground shell. Without the childless-idle-shell proof the
+  # pane must stay unreadable.
+  out=$(herdr_process_eval shell cortex no)
+  [ "$out" = unreadable ] \
+    || fail "a shell-named cortex pane that fails the idle-shell proof must not read agent-free, got '$out'"
   out=$(herdr_process_eval other cortex)
   [ "$out" = unreadable ] \
     || fail "an unattributable cortex pane must stay unreadable so no verb fires, got '$out'"
@@ -424,6 +450,17 @@ test_herdr_blind_pane_is_attributed_by_its_process() {
   pass "backends/herdr.sh: a blind pane is attributed by its foreground process, and only positively"
 }
 
+# fold_records: run the shared fold over `<name>|<argv0>` pairs, one per
+# argument, so a case reads as a process GROUP rather than as two lists.
+fold_records() {  # <name>|<argv0> ...
+  local records='' pair
+  for pair in "$@"; do
+    records="${records}${pair%%|*}"$'\t'"${pair#*|}"$'\n'
+  done
+  bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_records "$1"' "$ROOT" "$records"
+}
+
 test_harness_process_group_folds_to_the_safe_verdict() {
   local out
   # The shared fold is what turns a whole foreground process group into one
@@ -431,25 +468,75 @@ test_harness_process_group_folds_to_the_safe_verdict() {
   # in the same group; `shell` requires EVERY readable entry to be a shell, so a
   # group holding a stranger stays `other` and its callers refuse. A wrong `agent`
   # costs a refused verb; a wrong `shell` licenses closing over a live worker.
-  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
-    fm_harness_process_state_from_names "bash
-cortex" ""' "$ROOT")
+  out=$(fold_records 'bash|' 'cortex|')
   [ "$out" = agent ] || fail "a harness anywhere in the group must win, got '$out'"
-  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
-    fm_harness_process_state_from_names "bash" ""' "$ROOT")
+  out=$(fold_records 'bash|')
   [ "$out" = shell ] || fail "a lone idle shell must read shell, got '$out'"
-  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
-    fm_harness_process_state_from_names "bash
-some-stranger" ""' "$ROOT")
+  out=$(fold_records 'bash|' 'some-stranger|')
   [ "$out" = other ] || fail "a shell beside an unattributable stranger must read other, got '$out'"
-  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
-    fm_harness_process_state_from_names "" ""' "$ROOT")
+  out=$(fold_records)
   [ "$out" = other ] || fail "no readable name is not a shell, got '$out'"
   # The vocabulary itself is still the tmux adapter's, so the two cannot drift.
-  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
-    fm_harness_process_state_from_names "cortexd" ""' "$ROOT")
+  out=$(fold_records 'cortexd|')
   [ "$out" = other ] || fail "cortexd must not claim the harness identity, got '$out'"
+
+  # Each process carries its OWN argv0. A process reporting a name but no argv0
+  # must not shift a later process's argv0 onto itself: that pairs a name with a
+  # stranger's argv0 and misclassifies in both directions - here it would make an
+  # ordinary `git` inherit a claude install path and read as a live agent.
+  out=$(fold_records 'git|' 'bash|/opt/claude/bin/bash')
+  [ "$out" = other ] \
+    || fail "a process with no argv0 must not inherit a later process's argv0, got '$out'"
+  # And the other direction: the process that OWNS the harness argv0 must keep it.
+  out=$(fold_records 'git|' 'node|/opt/claude/bin/node')
+  [ "$out" = agent ] \
+    || fail "a process must be classified against its own argv0, got '$out'"
   pass "fm-harness-process-lib.sh: a process group folds toward refusal, never toward agent-free"
+}
+
+# The real `pane process-info` response is the input the fallback actually
+# parses, so these cases drive it end to end through the adapter rather than
+# stubbing the parse away. FM_TEST_HERDR_PROCESS_INFO is the canned body.
+test_herdr_process_info_is_parsed_per_process() {
+  local fb out
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  mkdir -p "$TMP_ROOT/herdr-procinfo"
+  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-procinfo")
+
+  process_state() {  # <foreground_processes JSON array>
+    PATH="$fb:$PATH" FM_TEST_HERDR_PROCESS_INFO="{\"result\":{\"type\":\"pane_process_info\",\"process_info\":{\"pane_id\":\"w1:p1\",\"foreground_processes\":$1}}}" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_process_state fmtest w1:p1' "$ROOT"
+  }
+
+  # The shape verified live on herdr 0.8.2 against a real Cortex Code worker.
+  out=$(process_state '[{"pid":4983,"name":"cortex","argv0":"cortex"}]')
+  [ "$out" = agent ] || fail "a live cortex foreground process must attribute the pane, got '$out'"
+  out=$(process_state '[{"pid":3073,"name":"bash","argv0":"-bash"}]')
+  [ "$out" = shell ] || fail "a lone foreground shell must read shell, got '$out'"
+
+  # A process that reports a name but no argv0 must not shift the NEXT process's
+  # argv0 onto itself. Parsed as two independent lists, `git` would inherit the
+  # claude install path below and the pane would read as a live agent.
+  out=$(process_state '[{"pid":1,"name":"git"},{"pid":2,"name":"bash","argv0":"/opt/claude/bin/bash"}]')
+  [ "$out" = other ] \
+    || fail "an argv0-less process must not inherit its neighbour's argv0, got '$out'"
+
+  # Gemini is the one uncovered harness no process NAME can attribute: the CLI is
+  # a node bundle, so a live worker reports MainThread and the interpreter path
+  # and only the script argument carries the identity.
+  out=$(process_state '[{"pid":11,"name":"MainThread","argv0":"/home/u/.local/node/bin/node","argv":["/home/u/.local/node/bin/node","/home/u/.local/bin/gemini","-y"]}]')
+  [ "$out" = agent ] || fail "a live gemini node bundle must attribute the pane, got '$out'"
+  # And the same interpreter without Gemini's script argument must NOT: a bare
+  # node is a stranger, and claiming it would be the widening this rule exists
+  # to prevent.
+  out=$(process_state '[{"pid":12,"name":"MainThread","argv0":"/home/u/.local/node/bin/node","argv":["/home/u/.local/node/bin/node","/home/u/src/server.js"]}]')
+  [ "$out" = other ] || fail "a bare node interpreter must stay unattributed, got '$out'"
+
+  # A body that is not this pane's process info is no evidence at all.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_PROCESS_INFO='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w9:p9","foreground_processes":[{"name":"bash"}]}}}' \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_pane_process_state fmtest w1:p1 || printf refused' "$ROOT")
+  [ "$out" = refused ] || fail "a response for another pane must carry no verdict, got '$out'"
+  pass "backends/herdr.sh: pane process-info is attributed per process, including gemini's argv-only identity"
 }
 
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
@@ -906,6 +993,7 @@ test_cortex_herdr_agent_read_is_not_agent_free_proof
 test_herdr_coverage_is_derived_not_pinned
 test_herdr_blind_pane_is_attributed_by_its_process
 test_harness_process_group_folds_to_the_safe_verdict
+test_herdr_process_info_is_parsed_per_process
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped
 test_cortex_herdr_steering_rings_instead_of_reporting_a_dead_pane
 test_cortex_herdr_agent_alive_is_not_dead_for_a_live_worker

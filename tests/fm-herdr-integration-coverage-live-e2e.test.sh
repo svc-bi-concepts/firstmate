@@ -21,10 +21,10 @@
 #      release that changes either direction surfaces here instead of silently
 #      changing recovery behavior.
 #
-# A run reads only `integration status` and the `integration list` usage text.
-# Both are read-only and session-independent - they inspect the installed build
-# and the harness-side hook paths, never a server, a session, a workspace, or a
-# pane - so no Herdr lifecycle operation is involved and no prompt is submitted.
+# A run reads only `integration status`. It is read-only and session-independent -
+# it inspects the installed build and the harness-side hook paths, never a
+# server, a session, a workspace, or a pane - so no Herdr lifecycle operation is
+# involved and no prompt is submitted.
 # The shared live gate therefore runs it by default wherever its tools exist.
 # Run it after every Herdr upgrade and before trusting a refreshed
 # docs/verification/cortex.md or docs/verification/rovo.md coverage claim.

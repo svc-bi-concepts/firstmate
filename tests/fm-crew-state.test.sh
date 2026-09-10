@@ -129,10 +129,21 @@ set -u
 case "${1:-}" in
   status)
     [ "${2:-}" = --json ] && {
-      printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n'
+      printf '{"client":{"version":"0.8.2","protocol":20},"server":{"running":true}}\n'
       exit 0
     } ;;
   server)
+    exit 0 ;;
+  integration)
+    # The coverage surface the herdr adapter reads before it may call an
+    # `agent_not_found` answer agent-free: one `<name>: <state> (<path>)` row
+    # per integration this build ships. cortex is absent, exactly as it is on
+    # the installed build, which is what makes a cortex husk answer ambiguous
+    # while a claude or codex one stays positive death evidence.
+    [ "${2:-}" = status ] || exit 0
+    for n in pi omp claude codex copilot kimi opencode cursor grok; do
+      printf '%s: not installed (/home/u/.%s/hooks/herdr-agent-state.sh)\n' "$n" "$n"
+    done
     exit 0 ;;
   pane)
     case "${2:-}" in

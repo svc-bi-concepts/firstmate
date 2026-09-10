@@ -1,0 +1,27 @@
+ok - fm-harness.sh: cortex's markers outrank an inherited CLAUDECODE
+ok - fm-harness.sh: a configured CORTEX_* input never claims the cortex identity
+ok - fm-harness.sh: ancestry detects an anchored cortex command and rejects neighbours
+ok - backends/tmux.sh: a cortex pane process classifies as a live agent and its near misses do not
+ok - backends/herdr.sh: an agent_not_found read is not agent-free proof for any harness herdr does not integrate with
+ok - backends/herdr.sh: the three coverage outcomes stay distinct, and an unreadable read still resolves a proven idle shell
+ok - backends/herdr.sh: a blind pane is attributed by its foreground process, and only positively
+ok - fm-harness-process-lib.sh: a process group folds toward refusal, never toward agent-free
+ok - backends/herdr.sh: pane process-info is attributed per process, by name only
+ok - fm-control.sh: exit refuses a cortex herdr task instead of reporting a false already-stopped
+ok - fm-spawn.sh: --relaunch refuses a cortex herdr endpoint rather than adding a second agent
+ok - fm-control.sh/fm-spawn.sh: an unreadable herdr coverage read reaches the operator as an unattributed endpoint
+ok - fm-task-inbox-lib.sh: the doorbell rings a cortex herdr worker instead of calling it dead
+ok - fm-backend.sh: fm_backend_agent_alive forwards the harness that makes the read honest
+ok - fm-control-lib.sh: cortex carries its verified interrupt and exit mechanics
+ok - fm-control-lib.sh: the cortex and codex prefix arms stay disjoint
+ok - fm-control-lib.sh: cortex is a crewmate/scout adapter only
+ok - fm-control-lib.sh: cortex's wiring is its own worktree-local settings file
+ok - fm-busy-lib.sh: cortex trusts only cortex-hook plus the firstmate-owned sources
+ok - fm-spawn.sh: a cortex launch delivers the brief positionally with no --config
+ok - fm-spawn.sh: cortex hooks land in the git-excluded worktree settings file
+ok - fm-spawn.sh: cortex hooks open on UserPromptSubmit and close on Stop and SessionEnd
+ok - fm-spawn.sh: cortex hook events from a superseded incarnation are rejected safely
+ok - fm-spawn.sh: cortex caps xhigh onto high, passes supported levels, and refuses minimal
+ok - fm-spawn.sh: a cortex secondmate launch is refused before anything is stood up
+ok - fm-spawn.sh: a cortex spawn refuses before endpoint creation when the binary is absent
+EXIT=0

@@ -1,0 +1,8 @@
+ok - real herdr: an empty pane recorded as cortex reads agent-free from its shell process
+ok - real herdr + real cortex: the pane's foreground process attributes the worker
+ok - real herdr: a live cortex worker reads alive even though agent get cannot see it
+ok - real herdr: interrupt delivers to a live cortex worker and leaves the endpoint intact
+ok - real herdr: exit actually stops the cortex worker and the pane returns to agent-free
+ok - real herdr: relaunch cleared the endpoint gate; the spawn path then reported: ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━�
+ok - real herdr: the cortex lifecycle verbs are available and the endpoint survived every one
+EXIT=0

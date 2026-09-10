@@ -1,0 +1,8 @@
+ok - a real cortex worker is live in the lab pane
+ok - readable coverage: the live worker reads alive
+ok - unreadable coverage + live worker: reads 'unreadable', never 'dead'
+fm-control.sh exit rc=1
+error: task advcov's endpoint reads 'unreadable' rather than a positively classified state; refusing to send a lifecycle command into an unattributed endpoint
+ok - fm-control.sh exit refuses and names the unattributed endpoint reading
+ok - the live cortex worker and its endpoint survived the refusal
+EXIT=0

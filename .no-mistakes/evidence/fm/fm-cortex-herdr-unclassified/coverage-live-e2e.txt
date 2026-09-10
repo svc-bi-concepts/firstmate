@@ -1,0 +1,4 @@
+ok - coverage reads from the real binary (herdr 0.8.2): pi omp claude codex copilot devin droid kimi opencode kilo hermes qodercli qwen cursor mastracode antigravity-cli grok
+ok - every dispatchable harness family is classified (covered: pi pi-signed omp claude codex opencode grok kimi cursor; not covered: cortex gemini muse rovo)
+ok - the covered set diverges, so neither verdict is vacuous
+ok - the recorded per-harness coverage claims still hold on herdr 0.8.2

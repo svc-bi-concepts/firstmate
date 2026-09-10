@@ -437,6 +437,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/validation-agent.md",
+      "audience": "operator-current"
+    },
+    {
       "path": "docs/verification/cortex.md",
       "audience": "maintainer-verification"
     },

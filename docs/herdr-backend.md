@@ -287,17 +287,21 @@ For one it does not, `agent get` answers `agent_not_found` for a live worker exa
 A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
 Which harnesses those are is read from Herdr's own reported integration coverage rather than pinned to a harness name in firstmate, so the rule holds for a harness added on either side later.
 The covered set is read from `integration status` alone, accepting only rows that carry that integration's own hook path, so a line of any other shape cannot be mistaken for an integration name.
-A coverage read that fails at all resolves to `unknown`, silently: the coverage read sits under a predicate every lifecycle verb polls, so a diagnostic printed there would repeat once per poll iteration rather than once per operator command.
+The read has three outcomes and they stay three: covered leaves Herdr's own registry verdict standing, PROVABLY uncovered is the one case the process fallback below may run, and a coverage read that fails at all resolves to `unknown` and refuses without consulting the fallback.
+Collapsing the last two would answer a harness question with evidence never established as relevant to it: on a build whose coverage surface simply failed to parse, a `claude` pane sharing a workspace with a `cortex` process would answer `alive` for `claude`.
+Not knowing whether a harness is covered is exactly when weaker evidence must not be substituted.
+That resolution is silent, because the coverage read sits under a predicate every lifecycle verb polls, so a diagnostic printed there would repeat once per poll iteration rather than once per operator command.
 The condition still reaches the operator through the `unreadable` verdict, which every caller names in the refusal it prints once.
 The coverage is read from the same client that answered the `agent get` it justifies, so a session whose client was reselected after a protocol mismatch cannot have one build answer the query while another declares its coverage.
 Install state is deliberately ignored: Herdr registers agents it launches whether or not the harness-side hook file is present, so coverage is the question and installation is a different one.
 On Herdr 0.8.2 the uncovered adapters are `cortex`, `rovo`, `muse`, and `gemini`; [`verification/cortex.md`](verification/cortex.md) and [`verification/rovo.md`](verification/rovo.md) own the live evidence.
 
-An honest registry read alone would leave every lifecycle verb refusing a worker nobody can attribute, so on that blind path the adapter attributes the pane from its foreground process instead, through `pane process-info`.
+An honest registry read alone would leave every lifecycle verb refusing a worker nobody can attribute, so on the provably-uncovered path the adapter attributes the pane from its foreground process instead, through `pane process-info`.
 That is the same class of evidence the tmux adapter has always used - a kernel process name, not a rendered surface - and both backends read it through the one shared vocabulary in [`../bin/fm-harness-process-lib.sh`](../bin/fm-harness-process-lib.sh) so they cannot disagree about what a name means.
 Only the two positive verdicts are trusted: a verified harness process makes the pane `alive`, a pane PROVEN to hold nothing but an idle shell is genuinely agent-free, and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
 The two are not symmetric, and the agent-free half is the dangerous one: it renders as `dead`, which licenses husk replacement and clears the relaunch endpoint gate, while a suspended worker or one still inside its launch line presents a single foreground `bash`.
 It therefore additionally demands the same childless-idle-shell proof the pane-close paths require, and a pane that cannot pass that proof stays `unknown`.
+It takes ONE sample of that proof rather than the retrying wrapper the deliberate close paths use, because this read is polled and a polled predicate has to cost one bounded read; the retry only ever converted a transient prompt helper from `unknown` into agent-free, so dropping it costs a poll of extra refusal and changes no safety direction.
 `gemini` needs one more signal than a name, because its CLI is a node bundle whose process reports `MainThread` and the interpreter path while only the script argument carries the identity; the adapter applies the structural rule in [`../bin/fm-gemini-lib.sh`](../bin/fm-gemini-lib.sh) to the same `pane process-info` response, as a separate positive-only signal exactly as the tmux adapter does.
 This is what makes interrupt, exit, and relaunch available for each of the uncovered harnesses rather than merely honest about them.
 

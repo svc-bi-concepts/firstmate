@@ -2098,38 +2098,6 @@ fm_backend_herdr_integration_covers() {  # <session> <harness-family>
   printf '%s\n' "$names" | grep -qxF "$integration"
 }
 
-# fm_backend_herdr_agent_read_is_blind: 0 when an agent_not_found response for
-# <harness-family> carries no information about whether an agent is present.
-#
-# A caller that names no harness keeps the harness-blind classification
-# unchanged; many callers legitimately have no harness in hand, and
-# bin/fm-backend.sh's fm_backend_agent_state owns that contract.
-#
-# When herdr's coverage cannot be read at all, this reports blind - the safe
-# direction, since every caller then refuses instead of acting on a read it
-# cannot justify.
-#
-# It is SILENT, and deliberately so. This is a predicate on the agent-read path,
-# which every lifecycle verb polls (bin/fm-control.sh's wait_agent_state runs it
-# every FM_CONTROL_POLL for the whole exit wait, and bin/fm-watch.sh runs it per
-# sweep), so anything printed here is printed once per poll iteration rather
-# than once per operator command. A degraded coverage surface is exactly the
-# state this path is built to tolerate, so it is the state that would produce
-# the longest run of identical lines. The condition still reaches the operator:
-# it resolves to `unreadable`, and every caller names that verdict in the
-# refusal it prints once (bin/fm-control.sh, bin/fm-spawn.sh's relaunch gate,
-# bin/fm-teardown.sh).
-fm_backend_herdr_agent_read_is_blind() {  # <session> <harness-family>
-  local session=${1-} harness=${2-}
-  [ -n "$harness" ] || return 1
-  fm_backend_herdr_integration_covers "$session" "$harness"
-  case $? in
-    0) return 1 ;;
-    1) return 0 ;;
-  esac
-  return 0
-}
-
 # fm_backend_herdr_pane_process_state: attribute <pane_id> from its FOREGROUND
 # PROCESS rather than from herdr's agent registry, printing agent|shell|other.
 #
@@ -2257,12 +2225,34 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|ot
 # worker. Such a harness is therefore never classified from that response alone.
 #
 # Which harnesses those are is NOT decided here: it is read from herdr's own
-# reported coverage by fm_backend_herdr_agent_read_is_blind above, so no harness
+# reported coverage by fm_backend_herdr_integration_covers above, so no harness
 # name is pinned in firstmate and the rule holds for a harness added on either
 # side later. A caller that passes no harness gets the harness-blind
 # classification unchanged.
 #
-# On that blind path the registry read is not the last word, because refusing
+# That coverage read has THREE outcomes and they stay three here, because
+# collapsing any two of them substitutes evidence for a question nobody
+# answered:
+#
+#   covered   - herdr's own registry is authoritative for this harness, so
+#               agent_not_found is real proof and the pane is `no-agent`. The
+#               process fallback never runs; it has nothing to add and could
+#               only contradict a build that can see the agent.
+#   uncovered - PROVEN to ship no integration for this harness, so
+#               agent_not_found carries no information. This is the only case
+#               the process fallback may run, and the only case it was built
+#               for.
+#   unreadable - herdr's coverage could not be read at all, so which of the two
+#               above applies is itself unknown. The pane is `unknown` and every
+#               verb refuses. Reading the foreground process here would answer a
+#               harness question with process evidence that was never
+#               established as relevant to it: on a build whose coverage surface
+#               simply failed to parse, a claude pane sharing a workspace with a
+#               cortex process would answer `alive` for claude. Not knowing
+#               whether a harness is covered is exactly when weaker evidence
+#               must not be substituted.
+#
+# On the uncovered path the registry read is not the last word, because refusing
 # every verb for an unattributable worker would leave lifecycle control
 # unavailable rather than merely honest. fm_backend_herdr_pane_process_state
 # attributes the pane from its foreground process instead, and only its two
@@ -2277,11 +2267,23 @@ fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|ot
 # a wrong one closes or relaunches over a live worker. A shell-looking process
 # NAME is far too weak to carry that - a worker suspended with Ctrl+Z, or still
 # inside its `cd ... && env ... <harness> ...` launch line, presents exactly one
-# foreground `bash`. The agent-free verdict therefore additionally demands
-# fm_backend_herdr_pane_idle_shell_pid, this repo's single owner of the
-# childless-idle-shell proof and the same boundary
-# bin/fm-herdr-session-cleanup.sh requires before closing a pane; without it the
-# pane stays `unknown` and every verb refuses.
+# foreground `bash`. The agent-free verdict therefore additionally demands the
+# childless-idle-shell proof, the same boundary bin/fm-herdr-session-cleanup.sh
+# requires before closing a pane; without it the pane stays `unknown` and every
+# verb refuses.
+#
+# It demands the SINGLE SAMPLE (fm_backend_herdr_pane_idle_shell_sample), not
+# the retrying fm_backend_herdr_pane_idle_shell_pid wrapper. This function is
+# polled - bin/fm-control.sh's wait_agent_state runs it every FM_CONTROL_POLL
+# for the whole exit wait, and bin/fm-watch.sh runs it unattended per sweep - so
+# one read has to cost one bounded read. The retrying wrapper spends up to
+# FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS process-info calls with sleeps between
+# them, which is affordable for the deliberate one-shot close operations it was
+# written for and is not affordable here. The retry only ever converted a
+# transient prompt helper from `unknown` into `no-agent`; losing it costs one
+# poll of extra refusal on a path whose callers already poll, and the safety
+# direction is unchanged, since a sample that does not positively prove a
+# childless idle shell still yields `unknown`.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   local session=$1 pane_id=$2 harness=${3:-} out code presence status process
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
@@ -2297,22 +2299,35 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   if [ -n "$code" ]; then
     if [ "$code" != agent_not_found ]; then
       printf 'unknown'
-    elif ! fm_backend_herdr_agent_read_is_blind "$session" "$harness"; then
-      printf 'no-agent'
-    else
-      process=$(fm_backend_herdr_pane_process_state "$session" "$pane_id") || process=
-      case "$process" in
-        agent) printf 'live' ;;
-        shell)
-          if fm_backend_herdr_pane_idle_shell_pid "$session" "$pane_id" >/dev/null 2>&1; then
-            printf 'no-agent'
-          else
-            printf 'unknown'
-          fi
-          ;;
-        *) printf 'unknown' ;;
-      esac
+      return 0
     fi
+    if [ -z "$harness" ]; then
+      printf 'no-agent'
+      return 0
+    fi
+    fm_backend_herdr_integration_covers "$session" "$harness"
+    case $? in
+      0)
+        printf 'no-agent'
+        ;;
+      1)
+        process=$(fm_backend_herdr_pane_process_state "$session" "$pane_id") || process=
+        case "$process" in
+          agent) printf 'live' ;;
+          shell)
+            if fm_backend_herdr_pane_idle_shell_sample "$session" "$pane_id" >/dev/null 2>&1; then
+              printf 'no-agent'
+            else
+              printf 'unknown'
+            fi
+            ;;
+          *) printf 'unknown' ;;
+        esac
+        ;;
+      *)
+        printf 'unknown'
+        ;;
+    esac
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)

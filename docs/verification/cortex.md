@@ -157,7 +157,8 @@ The launch is unaffected, since the positional brief needs no readiness gate.
 
 ## Backend liveness: the tmux arm
 
-`bin/backends/tmux.sh`'s `fm_backend_tmux_classify_process_name` gained an anchored `cortex` arm, and `FM_HARNESS_RE`/`FM_HARNESS_NAMES` in `bin/fm-session-lock-lib.sh` gained the same name.
+The shared process-name vocabulary gained an anchored `cortex` arm, and `FM_HARNESS_RE`/`FM_HARNESS_NAMES` in `bin/fm-session-lock-lib.sh` gained the same name.
+That vocabulary is owned by `fm_harness_classify_process_name` in [`../../bin/fm-harness-process-lib.sh`](../../bin/fm-harness-process-lib.sh), which both the tmux and herdr adapters delegate to; `fm_backend_tmux_classify_process_name` is the tmux adapter's name for it, so a harness added here reaches both backends at once.
 The arm is needed because the neighbouring `*codex*` glob does not cover `cortex` - the two names differ by one letter - and it is anchored rather than a `*cortex*` glob so `cortexd` and `cortex-helper` cannot claim the identity.
 Without it a live cortex pane classified `other`, the composed verdict was `ambiguous`, and every `bin/fm-control.sh` verb refused the worker it could no longer see.
 Adding a literal name to those lists can only change the outcome for a process actually named `cortex`, so no other harness's classification moves; `tests/fm-cortex-harness.test.sh` asserts both directions against a faked process name.
@@ -203,7 +204,7 @@ The `before` column is what HEAD produced on that same live pane, and `rovo`, `m
 
 Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
 The relaunch verifier is the highest-severity consumer: it previously read this live worker as `dead` and would have relaunched over the worktree it still owns; it now reads `alive` and refuses, and reads a genuinely stopped worker as `dead` and proceeds.
-A coverage read that fails entirely resolves to `unknown`, so the failure mode is refusal rather than a silent return to the blind verdict.
+A coverage read that fails entirely resolves to `unknown` without consulting the process fallback, so the failure mode is refusal rather than substituting evidence for a coverage question that went unanswered.
 That resolution is itself silent, because the predicate carrying it is polled by every lifecycle verb; the operator sees the condition once, in the `unreadable` verdict each caller names in its refusal.
 
 ### Lifecycle control: attributed by process, proven live

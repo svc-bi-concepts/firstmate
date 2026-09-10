@@ -343,7 +343,7 @@ SH
 }
 
 test_herdr_coverage_is_derived_not_pinned() {
-  local fb out dir noise covering
+  local fb out dir noise covering cortex_pane
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
   dir="$TMP_ROOT/herdr-coverage"
   mkdir -p "$dir"
@@ -410,32 +410,50 @@ cortex: not installed (/home/u/.cortex/hooks/herdr-agent-state.sh)
   [ "$out" = unreadable ] \
     || fail "a status surface of prose must refuse rather than claim cortex uncovered-and-agent-free, got '$out'"
 
-  # With NO readable coverage at all, the safe direction is refusal for every
-  # harness.
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>/dev/null)
-  [ "$out" = unreadable ] \
-    || fail "an unreadable coverage read must refuse rather than claim agent-free, got '$out'"
+  # The coverage read has THREE outcomes and each must stay distinct at the
+  # branch point. Every case below runs with a foreground process the fallback
+  # WOULD attribute as a live agent, so a branch that consults it when it must
+  # not shows up as a wrong verdict instead of passing vacuously on an empty
+  # process-info body.
+  cortex_pane='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p1","foreground_processes":[{"pid":99,"name":"cortex","argv0":"cortex"}]}}}'
 
-  # And it must do so SILENTLY. This read is a predicate every lifecycle verb
-  # polls, so anything written here is written once per poll iteration: an
-  # operator running one `exit` against a degraded coverage surface would get a
-  # run of identical lines. Counting is the assertion - a presence check would
-  # pass the very defect this guards.
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
-    . "$0/bin/backends/herdr.sh"
-    for _ in 1 2 3 4 5; do fm_backend_herdr_agent_state fmtest:w1:p1 cortex; done' \
-    "$ROOT" 2>&1 >/dev/null | grep -c . || true)
-  [ "$out" = 0 ] \
-    || fail "five polled reads against an unreadable coverage surface must emit nothing, got $out line(s)"
+  # 1. COVERED: herdr's own registry is authoritative, so agent_not_found is
+  # real proof and the fallback never runs - even though a cortex process is
+  # sitting right there in the pane.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=both FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>/dev/null)
+  [ "$out" = dead ] \
+    || fail "a covered harness must keep herdr's registry verdict and never consult the process, got '$out'"
+
+  # 2. PROVABLY UNCOVERED: agent_not_found carries no information, so the
+  # fallback is justified and answers on its own evidence. This is the only
+  # outcome it may run for.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=both FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = alive ] \
+    || fail "a provably uncovered harness must be attributed by its process, got '$out'"
+
+  # 3. UNREADABLE: which of the two above applies is itself unknown, so the
+  # process is NOT consulted and every harness refuses. Asked about claude, a
+  # pane running cortex must not answer `alive` - that is a confidently wrong
+  # attribution, worse than the blind read this change replaced, because
+  # nothing about it looks broken.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "an unreadable coverage read must not attribute claude from a cortex process, got '$out'"
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "an unreadable coverage read must refuse rather than fall back, got '$out'"
 
   # A harness-less caller keeps its documented behavior even then: it never had
   # a coverage question to ask.
-  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
-    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none FM_TEST_HERDR_PROCESS_INFO="$cortex_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
   [ "$out" = dead ] \
     || fail "a harness-less caller must not be changed by a coverage read, got '$out'"
-  pass "backends/herdr.sh: coverage is read from the answering client, parses only integration rows, and refuses silently when unreadable"
+  pass "backends/herdr.sh: the three coverage outcomes stay distinct, and only a proven-uncovered harness reaches the process fallback"
 }
 
 test_herdr_blind_pane_is_attributed_by_its_process() {
@@ -452,7 +470,7 @@ test_herdr_blind_pane_is_attributed_by_its_process() {
     PATH="$fb:$PATH" bash -c '
       . "$0/bin/backends/herdr.sh"
       fm_backend_herdr_pane_process_state() { printf "%s" "'"$1"'"; }
-      fm_backend_herdr_pane_idle_shell_pid() { [ "'"${3:-yes}"'" = yes ] && printf "4242\n"; }
+      fm_backend_herdr_pane_idle_shell_sample() { [ "'"${3:-yes}"'" = yes ] && printf "4242\n"; }
       fm_backend_herdr_agent_state fmtest:w1:p1 "'"$2"'"' "$ROOT"
   }
   out=$(herdr_process_eval agent cortex)
@@ -475,6 +493,29 @@ test_herdr_blind_pane_is_attributed_by_its_process() {
   out=$(herdr_process_eval '' cortex)
   [ "$out" = unreadable ] \
     || fail "an unreadable process read must stay unreadable, got '$out'"
+
+  # The agent-free proof has to be CHEAP, because this read is polled:
+  # bin/fm-control.sh's wait_agent_state runs it every FM_CONTROL_POLL for the
+  # whole exit wait, and bin/fm-watch.sh runs it unattended per sweep. Taking
+  # the retrying idle-shell wrapper here spends up to
+  # FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS process-info calls with sleeps
+  # between them for a pane that never settles - a worker suspended with Ctrl+Z
+  # holds exactly that shape indefinitely. Count the herdr invocations one state
+  # read actually costs: the answer must stay bounded, not scale with the retry
+  # budget.
+  local log shell_pane calls
+  log="$TMP_ROOT/herdr-process/cost.log"
+  : > "$log"
+  # A lone foreground shell whose pid is not in the OS process table, so the
+  # childless-idle-shell proof fails every sample - the never-settles case.
+  shell_pane='{"result":{"type":"pane_process_info","process_info":{"pane_id":"w1:p1","shell_pid":4194303,"foreground_process_group_id":4194303,"foreground_processes":[{"pid":4194303,"name":"bash","argv0":"-bash"}]}}}'
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_LOG="$log" FM_TEST_HERDR_PROCESS_INFO="$shell_pane" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "a shell that cannot pass the idle proof must stay unreadable, got '$out'"
+  calls=$(grep -c 'pane process-info' "$log" || true)
+  [ "$calls" -le 2 ] \
+    || fail "one polled state read must cost a bounded number of process-info calls, got $calls"
 
   # Divergence: the fallback must NOT reach a covered harness, whose registry
   # answer is authoritative, nor a caller that named no harness.
@@ -652,6 +693,39 @@ test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
   assert_contains "$out" "unreadable" \
     "the relaunch guard must refuse on the unreadable cortex reading, not pass on a false dead"
   pass "fm-spawn.sh: --relaunch refuses a cortex herdr endpoint rather than adding a second agent"
+
+  # A coverage read that fails entirely is the degraded state the adapter is
+  # built to tolerate, and the adapter answers it SILENTLY because it sits under
+  # a predicate every verb polls. Silence there is only acceptable while the
+  # commands a human actually runs still say the endpoint could not be
+  # attributed - so assert it at the surface a human reads, not at the
+  # predicate. This would fail if a caller went quiet about the condition.
+  write_herdr_meta cortex
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_TEST_HERDR_COVERAGE=none \
+    FM_CONTROL_POLL=0.1 FM_CONTROL_EXIT_WAIT=1 \
+    "$ROOT/bin/fm-control.sh" "$id" exit 2>&1)
+  status=$?
+  expect_code 1 "$status" "exit must refuse when herdr's coverage cannot be read: $out"
+  assert_contains "$out" "unreadable" \
+    "exit must tell the operator the endpoint could not be attributed"
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_TEST_HERDR_COVERAGE=none \
+    "$ROOT/bin/fm-spawn.sh" --relaunch "$id" 2>&1)
+  status=$?
+  expect_code 1 "$status" "relaunch must refuse when herdr's coverage cannot be read: $out"
+  assert_contains "$out" "unreadable" \
+    "relaunch must tell the operator the endpoint could not be attributed"
+  # And the same for a harness herdr DOES integrate with: an unreadable coverage
+  # read means nobody knows whether the registry answer is proof, so a claude
+  # task must refuse here too rather than act on it.
+  write_herdr_meta claude
+  out=$(PATH="$fb:$PATH" FM_HOME="$home" FM_TEST_HERDR_COVERAGE=none \
+    FM_CONTROL_POLL=0.1 FM_CONTROL_EXIT_WAIT=1 \
+    "$ROOT/bin/fm-control.sh" "$id" exit 2>&1)
+  status=$?
+  expect_code 1 "$status" "exit must refuse for a covered harness when coverage is unreadable: $out"
+  assert_contains "$out" "unreadable" \
+    "a covered harness must also learn its endpoint could not be attributed"
+  pass "fm-control.sh/fm-spawn.sh: an unreadable herdr coverage read reaches the operator as an unattributed endpoint"
 }
 
 # The steering doorbell is the FOURTH consumer of the same blind Herdr read,

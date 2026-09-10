@@ -36,6 +36,19 @@ Three keys make an ACP target work:
 
 A target name is yours to choose; it is meaningful only as the key `acp_registry_overrides` resolves.
 
+### The ACP bridge is refused in a repository carrying agent instructions
+
+An `acp:<target>` gate agent cannot validate a repository that carries `AGENTS.md` or `CLAUDE.md`.
+no-mistakes refuses to launch it there because it cannot prove it can suppress those project instructions for an ACP-bridged agent, and a validation agent reading the project's own agent instructions is not a validation agent.
+Only `codex`, `claude`, and `pi` carry a verified neutralization knob, and only while `agent_args_override` does not replace it.
+
+The refusal arrives as a failed run before the first step, naming the gate agent and the instruction files it will not neutralize.
+`no-mistakes doctor` does NOT catch this, because the refusal depends on the repository being validated while doctor answers only whether the agent is runnable at all.
+A doctor line reporting your `acp:` agent runnable is therefore compatible with every run in such a repository failing.
+
+firstmate's own repository carries both files, so validating firstmate through the ACP bridge is not available.
+Where that leaves a single-vendor setup is a real tradeoff: a repository with agent instructions can run its crews on an ACP-bridged tool, but its validation gate has to be one of the three natively neutralizing agents.
+
 ## Cortex Code as the worked example
 
 Cortex Code's ACP entry point is `cortex acp serve`, which starts it as an ACP agent over stdio.
@@ -75,6 +88,7 @@ The [cortex harness reference](../.agents/skills/harness-adapters/references/har
 Run `no-mistakes doctor`.
 For an ACP setup it should show `acpx` found with its resolved path, and a gate validation line naming your chosen agent as runnable.
 A configuration that parses is not evidence the bridge works; that line is.
+That line does not clear the repository-dependent refusal above, so confirm the target repository carries no `AGENTS.md` or `CLAUDE.md` before relying on an `acp:` gate agent for it.
 
 Then spend one one-shot prompt through the bridge before trusting it with a real run:
 

@@ -98,15 +98,16 @@ A fix belongs with a real backend capture and its own regression, not inside thi
 
 ## Backend support, and what lifecycle control actually buys you
 
-`bin/backends/tmux.sh`'s process classifier carries an anchored `cortex` arm, so a cortex pane on the verified reference backend reads as a live agent and every `bin/fm-control.sh` verb works there.
+The shared process-name vocabulary in `../../../../../bin/fm-harness-process-lib.sh` carries an anchored `cortex` arm, so a cortex pane reads as a live agent and every `bin/fm-control.sh` verb works on the verified reference backend.
 The neighbouring `*codex*` glob does NOT cover `cortex`; without its own arm a live pane classified `other` and every verb refused.
+That classifier is the single owner both the tmux and herdr adapters delegate to, so the arm reaches both backends at once.
 
 Herdr is different and the difference is load-bearing.
 Herdr's installed build ships no cortex integration, so `herdr agent get` answers `agent_not_found` for a LIVE cortex pane exactly as it does for an empty one.
-`fm_backend_herdr_pane_agent_state` therefore resolves that response to `unknown` for cortex ONLY, so the paths that need positive agent-free proof refuse instead of acting on a blind read: `exit` cannot report a false `already-stopped`, `--relaunch` cannot clear its agent-free guard and start a second agent in the same pane, and a same-label respawn cannot close a live tab as a husk.
-That refusal is the safe behaviour, not working control: on Herdr, cortex has no lifecycle CONTROL until Herdr ships cortex detection.
+`fm_backend_herdr_pane_agent_state` therefore never classifies from that response alone: it reads Herdr's own reported integration coverage - not a harness name pinned in firstmate - and for a harness that enumeration omits it attributes the pane from its foreground process instead, so `exit` cannot report a false `already-stopped`, `--relaunch` cannot clear its agent-free guard and start a second agent in the same pane, and a same-label respawn cannot close a live tab as a husk.
+Because the shared vocabulary names `cortex`, that fallback gives cortex WORKING lifecycle control on Herdr rather than a safe refusal; `../../../../../docs/herdr-backend.md` under "Restart and liveness behavior" owns the exact rule and its uncertainty cases.
 
-Steering is the exception, and it is the reason the harness argument is threaded rather than passed at three call sites only.
+Steering was the first path fixed here, and it is the reason the harness argument is threaded rather than passed at three call sites only.
 The doorbell's own endpoint pre-check reads the same blind response, but it is not a recovery path and it did not refuse safely: it silently declined to type, reported the worker as exited, and left the watcher escalating it as unavailable rather than re-ringing.
 A cortex worker on Herdr was therefore startable but never redirectable.
 `fm_task_inbox_ring` and `fm_backend_agent_alive` now take the same optional harness family the state read does, and every firstmate-side consumer passes it, so steering a cortex worker on Herdr works.

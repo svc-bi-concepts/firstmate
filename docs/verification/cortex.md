@@ -226,7 +226,12 @@ It therefore additionally requires `fm_backend_herdr_pane_idle_shell_sample`, on
 `rovo` (`comm=rovo`, [rovo.md](rovo.md)) and `muse` (`muse-bin`/`muse-bin-<version>`, [muse.md](muse.md)) are already carried by the shared name vocabulary, so they are attributable alongside `cortex`.
 `gemini` is not: its CLI is a node bundle reporting `MainThread` and the interpreter path with the identity only in the script argument, so no process name attributes it and its panes read `unknown` - an honest refusal rather than lifecycle control.
 
-`tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end.
+`tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end, on a host with a real Herdr server and an installed `cortex`:
+
+```
+FM_CORTEX_HERDR_LIFECYCLE_LIVE_E2E=1 bin/fm-test-run.sh tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh
+```
+
 It provisions an isolated non-default `fm-lab-` session through `bin/fm-herdr-lab.sh`, launches a REAL Cortex Code worker into it, and asserts the whole sequence; run 2026-09-10 on Herdr 0.8.2, all cases green:
 
 ```
@@ -240,6 +245,7 @@ ok - the cortex lifecycle verbs are available and the endpoint survived every on
 ```
 
 The guard asserts that Herdr still answers `agent_not_found` for that worker, so the fallback can never be silently untested by a future build that starts registering cortex.
+`tests/fm-herdr-integration-coverage-live-e2e.test.sh` is the companion guard over the coverage read itself and needs no opt-in: it runs by default wherever `herdr` and `jq` are installed.
 The empty-pane case is the divergence that keeps the rest from being vacuous: the same pane, same session, same recorded harness, differing only in whether a cortex process runs, must classify differently.
 Relaunch is asserted at its endpoint gate rather than to completion, because that gate is what the blind read broke; a full relaunch additionally drives worktree acquisition, which fails in the guard's synthetic home for reasons unrelated to this classifier.
 
@@ -253,6 +259,8 @@ $ herdr agent list --session <lab>
 ```
 
 ### The guard, both directions
+
+These readings are the coverage guard measured on its own, before the process-attribution fallback above was added; `unreadable` is where a blind read stopped, not where a cortex pane stops today.
 
 ```
 cortex  no harness arg   -> dead          <- the hazard, if a consumer is left unthreaded
@@ -276,7 +284,7 @@ error: task ctx1's endpoint reads 'unreadable' rather than a positively classifi
 state; refusing to send a lifecycle command into an unattributed endpoint
 ```
 
-So on Herdr, cortex still has no lifecycle CONTROL - that is Herdr's detection gap to close - but every path that could act destructively on the blind read refuses instead.
+At that stage every path that could act destructively on the blind read refused instead, which removed the hazard without giving cortex lifecycle CONTROL on Herdr; the process-attribution fallback recorded above is what turned those refusals into working control.
 
 ### Steering: the consumer that did not refuse safely
 
@@ -327,8 +335,8 @@ All Herdr work ran in an isolated non-`default` lab session provisioned and torn
 Recorded because an earlier revision of this file listed these as pending, and a reader outside this fleet would otherwise plan around follow-up work that no longer exists.
 
 - **Lifecycle control is done**, not pending.
-  cortex is in `fm_control_harness_supported` (`bin/fm-control-lib.sh`) and its interrupt and exit mechanics are wired, with the full verb set verified end to end on tmux.
-  What is still missing is Herdr-side *detection*, which is Herdr's to ship - see "Backend liveness: Herdr" above - and not outstanding firstmate lifecycle work.
+  cortex is in `fm_control_harness_supported` (`bin/fm-control-lib.sh`) and its interrupt and exit mechanics are wired, with the full verb set verified end to end on tmux and on Herdr.
+  Herdr still ships no cortex *detection*, which is Herdr's to close, but firstmate no longer waits on it: the process-attribution fallback under "Backend liveness: Herdr" above supplies the endpoint verdict those verbs need.
 - **Steering a cortex worker on Herdr is fixed and verified live.**
   See "Backend liveness: Herdr"; this was the one silent failure in the set.
 - `--no-auto-update` removed from the launch template and its rationale corrected.

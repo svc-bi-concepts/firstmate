@@ -191,16 +191,51 @@ The general rule is what makes the fix hold, and the before/after on that same l
 
 ```
 harness   before(HEAD)   after
-cortex    unreadable     unreadable
-rovo      dead           unreadable   <- a LIVE worker read as agent-free
-muse      dead           unreadable
-gemini    dead           unreadable
-claude    dead           dead         <- unchanged
+cortex    unreadable     alive        <- attributed by its foreground process
+rovo      dead           alive        <- a LIVE worker had read as agent-free
+muse      dead           alive
+gemini    dead           alive
+claude    dead           dead         <- unchanged: herdr's registry is authoritative
 ```
 
+The `before` column is what HEAD produced on that same live pane, and `rovo`, `muse`, and `gemini` are why the harness name could not be the rule: the earlier guard pinned `cortex` alone, so three other harnesses still read a running worker as agent-free - `dead` being the one value the relaunch verifier acts on.
+`claude` and `codex` stay `dead` here because for a harness Herdr DOES integrate with its registry remains authoritative, and no claude agent is registered in that pane.
+
 Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
-The relaunch verifier is the highest-severity consumer: running `bin/fm-spawn.sh`'s own sequence (`fm_backend_agent_state` with the recorded harness family) against that live pane returned `unreadable`, so the relaunch refuses with `endpoint reads 'unreadable'; a relaunch requires a positively agent-free endpoint` instead of putting a second worker onto a worktree a live agent still owns.
-A coverage read that fails entirely resolves to `unknown` as well, with one warning naming the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
+The relaunch verifier is the highest-severity consumer: it previously read this live worker as `dead` and would have relaunched over the worktree it still owns; it now reads `alive` and refuses, and reads a genuinely stopped worker as `dead` and proceeds.
+A coverage read that fails entirely resolves to `unknown`, with one warning naming the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
+
+### Lifecycle control: attributed by process, proven live
+
+An honest registry read stops the lying but leaves every verb refusing a worker nobody can attribute, so the adapter attributes an uncovered harness's pane from its foreground process through `pane process-info`, read via the shared vocabulary in `bin/fm-harness-process-lib.sh`.
+Verified 2026-09-10 on Herdr 0.8.2 against the same live cortex pane:
+
+```
+$ herdr pane process-info --pane w16:p2 --session default
+{"result":{"process_info":{"pane_id":"w16:p2","shell_pid":3073,
+  "foreground_process_group_id":4983,
+  "foreground_processes":[{"pid":4983,"name":"cortex","argv0":"cortex"}]}}}
+```
+
+That pane then read `alive` where the registry read alone said `unreadable`.
+Only the two positive verdicts are trusted - a verified harness process is `alive`, a pane holding nothing but an idle shell is agent-free - and anything unreadable or unattributable stays `unknown`, so no verb fires on uncertainty.
+
+`tests/fm-cortex-herdr-lifecycle-live-e2e.test.sh` is the opt-in guard that refreshes this end to end.
+It provisions an isolated non-default `fm-lab-` session through `bin/fm-herdr-lab.sh`, launches a REAL Cortex Code worker into it, and asserts the whole sequence; run 2026-09-10 on Herdr 0.8.2, all cases green:
+
+```
+ok - an empty pane recorded as cortex reads agent-free from its shell process
+ok - real cortex: the pane's foreground process attributes the worker
+ok - a live cortex worker reads alive even though agent get cannot see it
+ok - interrupt delivers to a live cortex worker and leaves the endpoint intact
+ok - exit actually stops the cortex worker and the pane returns to agent-free
+ok - relaunch cleared the endpoint gate
+ok - the cortex lifecycle verbs are available and the endpoint survived every one
+```
+
+The guard asserts that Herdr still answers `agent_not_found` for that worker, so the fallback can never be silently untested by a future build that starts registering cortex.
+The empty-pane case is the divergence that keeps the rest from being vacuous: the same pane, same session, same recorded harness, differing only in whether a cortex process runs, must classify differently.
+Relaunch is asserted at its endpoint gate rather than to completion, because that gate is what the blind read broke; a full relaunch additionally drives worktree acquisition, which fails in the guard's synthetic home for reasons unrelated to this classifier.
 
 This is no longer asserted only against a canned Herdr CLI.
 It was re-verified against a **real Herdr 0.8.2 server** with a real Cortex Code v1.1.84 worker and a real claude worker spawned into the same isolated lab session at the same moment, both idle at their composers and both demonstrably alive by pane read.

@@ -384,6 +384,74 @@ test_herdr_coverage_is_derived_not_pinned() {
   pass "backends/herdr.sh: coverage is derived from herdr, survives losing a surface, and refuses when unreadable"
 }
 
+test_herdr_blind_pane_is_attributed_by_its_process() {
+  local fb out
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  mkdir -p "$TMP_ROOT/herdr-process"
+  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-process")
+
+  # On the blind path the registry read is not the last word: refusing every verb
+  # for an unattributable worker leaves lifecycle control unavailable rather than
+  # merely honest. The pane's foreground process is the source that can attribute
+  # it, and only its two POSITIVE verdicts may be trusted.
+  herdr_process_eval() {  # <process-state> <harness>
+    PATH="$fb:$PATH" bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_pane_process_state() { [ -n "$1" ] && printf "%s" "'"$1"'"; }
+      fm_backend_herdr_agent_state fmtest:w1:p1 "'"$2"'"' "$ROOT"
+  }
+  out=$(herdr_process_eval agent cortex)
+  [ "$out" = alive ] \
+    || fail "a cortex pane running a verified harness process must read alive, got '$out'"
+  out=$(herdr_process_eval shell cortex)
+  [ "$out" = dead ] \
+    || fail "a cortex pane holding only an idle shell is positively agent-free, got '$out'"
+  out=$(herdr_process_eval other cortex)
+  [ "$out" = unreadable ] \
+    || fail "an unattributable cortex pane must stay unreadable so no verb fires, got '$out'"
+  out=$(herdr_process_eval '' cortex)
+  [ "$out" = unreadable ] \
+    || fail "an unreadable process read must stay unreadable, got '$out'"
+
+  # Divergence: the fallback must NOT reach a covered harness, whose registry
+  # answer is authoritative, nor a caller that named no harness.
+  out=$(herdr_process_eval agent claude)
+  [ "$out" = dead ] \
+    || fail "a covered harness must keep herdr's own registry verdict, got '$out'"
+  out=$(herdr_process_eval agent '')
+  [ "$out" = dead ] \
+    || fail "a harness-less caller must keep the harness-blind verdict, got '$out'"
+  pass "backends/herdr.sh: a blind pane is attributed by its foreground process, and only positively"
+}
+
+test_harness_process_group_folds_to_the_safe_verdict() {
+  local out
+  # The shared fold is what turns a whole foreground process group into one
+  # verdict. `agent` must win, because a harness that shells out keeps the harness
+  # in the same group; `shell` requires EVERY readable entry to be a shell, so a
+  # group holding a stranger stays `other` and its callers refuse. A wrong `agent`
+  # costs a refused verb; a wrong `shell` licenses closing over a live worker.
+  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_names "bash
+cortex" ""' "$ROOT")
+  [ "$out" = agent ] || fail "a harness anywhere in the group must win, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_names "bash" ""' "$ROOT")
+  [ "$out" = shell ] || fail "a lone idle shell must read shell, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_names "bash
+some-stranger" ""' "$ROOT")
+  [ "$out" = other ] || fail "a shell beside an unattributable stranger must read other, got '$out'"
+  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_names "" ""' "$ROOT")
+  [ "$out" = other ] || fail "no readable name is not a shell, got '$out'"
+  # The vocabulary itself is still the tmux adapter's, so the two cannot drift.
+  out=$(bash -c '. "$0/bin/fm-harness-process-lib.sh"
+    fm_harness_process_state_from_names "cortexd" ""' "$ROOT")
+  [ "$out" = other ] || fail "cortexd must not claim the harness identity, got '$out'"
+  pass "fm-harness-process-lib.sh: a process group folds toward refusal, never toward agent-free"
+}
+
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
   local fb dir home proj wt id=cx-herdr out status harness
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
@@ -836,6 +904,8 @@ test_cortex_ancestry_matches_only_the_anchored_command_name
 test_cortex_pane_process_classifies_as_a_live_agent
 test_cortex_herdr_agent_read_is_not_agent_free_proof
 test_herdr_coverage_is_derived_not_pinned
+test_herdr_blind_pane_is_attributed_by_its_process
+test_harness_process_group_folds_to_the_safe_verdict
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped
 test_cortex_herdr_steering_rings_instead_of_reporting_a_dead_pane
 test_cortex_herdr_agent_alive_is_not_dead_for_a_live_worker

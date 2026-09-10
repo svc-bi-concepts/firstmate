@@ -86,6 +86,14 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # shellcheck source=bin/fm-transition-lib.sh
 . "$FM_BACKEND_HERDR_ROOT/bin/fm-transition-lib.sh"
 
+# Shared harness process-name vocabulary (bin/fm-harness-process-lib.sh), the
+# same one the tmux adapter classifies its pane processes with. This adapter uses
+# it for the process-attribution fallback that answers for a pane whose harness
+# herdr's build has no integration for, so the two backends can never disagree
+# about what a given process name means.
+# shellcheck source=bin/fm-harness-process-lib.sh
+. "$FM_BACKEND_HERDR_ROOT/bin/fm-harness-process-lib.sh"
+
 FM_BACKEND_HERDR_MIN_PROTOCOL=14
 # events.subscribe (the native pane.agent_status_changed push stream) and its
 # subscription_event schema first shipped at protocol 16 (verified: herdr
@@ -2082,6 +2090,47 @@ fm_backend_herdr_agent_read_is_blind() {  # <harness-family>
   return 0
 }
 
+# fm_backend_herdr_pane_process_state: attribute <pane_id> from its FOREGROUND
+# PROCESS rather than from herdr's agent registry, printing agent|shell|other.
+#
+# This is the independent source lifecycle control needs on a pane whose harness
+# herdr has no integration for. Making the registry read honest stops it lying,
+# but honesty alone leaves every verb refusing a worker nobody can attribute; the
+# verbs need a signal that positively identifies what is running. `pane
+# process-info` is that signal, and it is the same CLASS of evidence the tmux
+# adapter has always used - a kernel process name, not a rendered surface - so it
+# is read through the one shared classifier (bin/fm-harness-process-lib.sh)
+# rather than a second copy of the harness vocabulary.
+#
+# Verified on herdr 0.8.2 against a live Cortex Code worker: `pane process-info
+# --pane <pane>` reported foreground_processes[0].name = "cortex" for the same
+# pane whose `agent get` answered agent_not_found.
+#
+# Prints nothing when the response cannot be trusted: a failed call, a body that
+# is not this pane's process info, or no usable foreground process name. The
+# caller must treat that as no evidence, never as absence.
+fm_backend_herdr_pane_process_state() {  # <session> <pane_id> -> agent|shell|other
+  local session=$1 pane=$2 info name argv0
+  info=$(fm_backend_herdr_cli "$session" pane process-info --pane "$pane" 2>/dev/null) || return 1
+  printf '%s' "$info" | jq -e --arg pane "$pane" '
+    .result.type == "pane_process_info"
+    and .result.process_info.pane_id == $pane
+  ' >/dev/null 2>&1 || return 1
+  # The foreground process group is what owns the tty, so its entries are what a
+  # lifecycle key would actually reach. Any entry naming a verified harness is
+  # enough for `agent`, matching the tmux adapter's own either-source rule.
+  name=$(printf '%s' "$info" | jq -er '
+    [.result.process_info.foreground_processes[]?
+      | (.name // empty) | select(type == "string" and length > 0)] | join("\n")
+  ' 2>/dev/null) || return 1
+  [ -n "$name" ] || return 1
+  argv0=$(printf '%s' "$info" | jq -r '
+    [.result.process_info.foreground_processes[]?
+      | ((.argv0 // .argv[0]?) // empty) | select(type == "string" and length > 0)] | join("\n")
+  ' 2>/dev/null) || argv0=
+  fm_harness_process_state_from_names "$name" "$argv0"
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
 # dead|no-agent|live|unknown, purely from the JSON body of two read-only
 # calls - never from process exit status, since a business-logic "not found"
@@ -2120,16 +2169,23 @@ fm_backend_herdr_agent_read_is_blind() {  # <harness-family>
 # actually integrates with. For any harness it does not, a LIVE worker answers
 # agent_not_found exactly like an empty restored pane does, and reading that as
 # no-agent would let the callers below stop, relaunch into, or close a running
-# worker. Such a harness therefore resolves to `unknown` - the honest verdict -
-# so every caller that needs POSITIVE agent-free proof refuses.
+# worker. Such a harness is therefore never classified from that response alone.
 #
 # Which harnesses those are is NOT decided here: it is read from herdr's own
 # reported coverage by fm_backend_herdr_agent_read_is_blind above, so no harness
 # name is pinned in firstmate and the rule holds for a harness added on either
 # side later. A caller that passes no harness gets the harness-blind
 # classification unchanged.
+#
+# On that blind path the registry read is not the last word, because refusing
+# every verb for an unattributable worker would leave lifecycle control
+# unavailable rather than merely honest. fm_backend_herdr_pane_process_state
+# attributes the pane from its foreground process instead, and only its two
+# POSITIVE verdicts are trusted: a verified harness process makes the pane `live`,
+# a pane holding nothing but an idle shell is genuinely `no-agent`, and anything
+# unreadable or unattributable stays `unknown` so no verb fires on uncertainty.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
-  local session=$1 pane_id=$2 harness=${3:-} out code presence status
+  local session=$1 pane_id=$2 harness=${3:-} out code presence status process
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
   if [ "$presence" != present ]; then
     case "$presence" in
@@ -2141,11 +2197,17 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    if [ "$code" = agent_not_found ] \
-      && ! fm_backend_herdr_agent_read_is_blind "$harness"; then
+    if [ "$code" != agent_not_found ]; then
+      printf 'unknown'
+    elif ! fm_backend_herdr_agent_read_is_blind "$harness"; then
       printf 'no-agent'
     else
-      printf 'unknown'
+      process=$(fm_backend_herdr_pane_process_state "$session" "$pane_id") || process=
+      case "$process" in
+        agent) printf 'live' ;;
+        shell) printf 'no-agent' ;;
+        *) printf 'unknown' ;;
+      esac
     fi
     return 0
   fi

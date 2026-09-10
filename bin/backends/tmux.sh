@@ -24,6 +24,8 @@
 . "$FM_BACKEND_LIB_DIR/fm-session-lock-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-cursor-lib.sh"
+# shellcheck source=bin/fm-harness-process-lib.sh
+. "$FM_BACKEND_LIB_DIR/fm-harness-process-lib.sh"
 # shellcheck source=bin/fm-gemini-lib.sh
 . "$FM_BACKEND_LIB_DIR/fm-gemini-lib.sh"
 
@@ -154,57 +156,14 @@ fm_backend_tmux_current_command() {  # <target>
   tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null
 }
 
-# fm_backend_tmux_classify_process_name: the single owner of the process-name
-# vocabulary shared by every liveness signal below - `agent` for a verified
-# harness, `shell` for an idle login/interactive shell, `other` for anything
-# else. Keeping one classifier means the two independent name sources can never
-# drift into disagreeing about what a given name means.
+# fm_backend_tmux_classify_process_name: this adapter's name for the shared
+# process-name vocabulary. The classifier itself is owned by
+# bin/fm-harness-process-lib.sh because the Herdr adapter now reads the same
+# signal from `pane process-info`, and two copies of the harness-name vocabulary
+# would drift. Kept as a named wrapper so this adapter's callers and tests are
+# unchanged.
 fm_backend_tmux_classify_process_name() {  # <path> [argv0] -> agent|shell|other
-  local path=$1 argv0=${2:-} base
-  base=${path##*/}
-  base=${base#-}
-  case "$base" in
-    # muse is anchored rather than globbed like its neighbours: its installed
-    # binary is muse-bin-<version> (the launcher execs it, so the version is the
-    # live process name and changes on every auto-update), and unlike `claude` or
-    # `codex` the substring `muse` is a common English fragment - a *muse* glob
-    # would classify musescore or amuse as a live agent pane. The install path
-    # cannot carry it either: ~/.local/bin/muse-bin-<version> has no `muse` path
-    # COMPONENT, so the fm_harness_path_name fallback below never fires for it.
-    muse|muse-bin-*) printf 'agent' ;;
-    # omp (Oh My Pi) is anchored for the same reason as muse: its live process
-    # name is the bare word `omp` (verified, omp 18.1.11) and a glob would claim
-    # unrelated commands such as ompd or comp.
-    #
-    # cortex needs its own arm because the neighbouring `*codex*` glob does NOT
-    # cover it - the two names differ by one letter - and it is anchored because
-    # its live process name is the bare word `cortex` (verified, Cortex Code
-    # v1.1.84, which reports comm=cortex) while a *cortex* glob would claim
-    # cortexd or cortex-helper. Without the arm a live cortex pane classifies
-    # `other`, the composed verdict is `ambiguous`, and every fm-control verb
-    # refuses the worker it can no longer see.
-    *claude*|*codex*|*opencode*|*grok*|*kimi*|*rovo*|pi|pi-signed|pi-launcher|Pi|omp|cortex) printf 'agent' ;;
-    zsh|bash|sh|dash|ash|ksh|mksh|tcsh|csh|fish) printf 'shell' ;;
-    *)
-      if fm_harness_path_name "$path" >/dev/null || fm_harness_path_name "$argv0" >/dev/null; then
-        printf 'agent'
-      # cursor-agent runs as a bundled node script, so tmux reports the pane
-      # command as a bare `node` that no name pattern above can own, and its
-      # other installed name is the far-too-generic `agent` (verified live on
-      # cursor-agent 2026.08.11-e8db854: #{pane_current_command} is `node` while
-      # `ps -o comm=` carries the cursor-agent install path). Identity therefore
-      # comes from the narrowed structural rule in bin/fm-cursor-lib.sh, which
-      # demands Cursor's own name or install tree in the path or argv[0]. An
-      # unrelated `node` or `agent` matches nothing here and stays `other`,
-      # which the callers above fold into `ambiguous` rather than `dead`, so a
-      # stranger's node pane is never reported as an agent-free pane.
-      elif fm_cursor_process_matches "${path:-$argv0}" '' "$argv0"; then
-        printf 'agent'
-      else
-        printf 'other'
-      fi
-      ;;
-  esac
+  fm_harness_classify_process_name "$@"
 }
 
 # fm_backend_tmux_foreground_comms: the kernel-side names of every process in

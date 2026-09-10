@@ -166,6 +166,42 @@ Adding a literal name to those lists can only change the outcome for a process a
 
 Herdr's installed build ships no cortex integration (`herdr integration status` lists none - the same enumeration recorded in [rovo.md](rovo.md) for rovo's identical gap), so `herdr agent get <pane>` answers `agent_not_found` for a LIVE cortex pane exactly as it answers for an empty restored one.
 
+Which harnesses this applies to is not pinned in firstmate: `fm_backend_herdr_pane_agent_state` reads Herdr's own reported integration coverage and resolves `agent_not_found` to `unknown` for every harness that enumeration omits.
+On Herdr 0.8.2 that is `cortex`, `rovo`, `muse`, and `gemini`; `pi-signed` resolves through Herdr's `pi` integration because firstmate launches the same pi agent (`bin/fm-control-lib.sh`'s shared wiring paths).
+Verified 2026-09-10 on Herdr 0.8.2 against a live Cortex Code worker in the default session's pane `w16:p2`, reading its own endpoint:
+
+```
+$ herdr pane get w16:p2 --session default
+{"result":{"pane":{"agent_status":"unknown","pane_id":"w16:p2","terminal_title_stripped":"cortex",...}}}
+$ herdr agent get w16:p2 --session default
+{"error":{"code":"agent_not_found","message":"agent target w16:p2 not found"},"id":"cli:agent:get"}
+
+$ herdr integration status | cut -d: -f1 | tr '\n' ' '
+pi omp claude codex copilot devin droid kimi opencode kilo hermes qodercli qwen cursor mastracode antigravity-cli grok
+```
+
+Install state is deliberately not consulted, and this run is why: `integration status` reported every integration `not installed`, yet a live claude pane in the same session still reported a registered agent, so Herdr registers agents it launches regardless of the harness-side hook file.
+
+```
+$ herdr pane list --session default   # claude pane, same server, same moment
+{"agent":"claude","agent_status":"done","pane_id":"w0:p1",...}
+```
+
+The general rule is what makes the fix hold, and the before/after on that same live cortex pane shows why a harness name would not have:
+
+```
+harness   before(HEAD)   after
+cortex    unreadable     unreadable
+rovo      dead           unreadable   <- a LIVE worker read as agent-free
+muse      dead           unreadable
+gemini    dead           unreadable
+claude    dead           dead         <- unchanged
+```
+
+Read with no harness argument the verdict is `dead`, unchanged, because a caller that names no harness never had a coverage question to ask.
+The relaunch verifier is the highest-severity consumer: running `bin/fm-spawn.sh`'s own sequence (`fm_backend_agent_state` with the recorded harness family) against that live pane returned `unreadable`, so the relaunch refuses with `endpoint reads 'unreadable'; a relaunch requires a positively agent-free endpoint` instead of putting a second worker onto a worktree a live agent still owns.
+A coverage read that fails entirely resolves to `unknown` as well, with one warning naming the harness and Herdr version, so the failure mode is refusal rather than a silent return to the blind verdict.
+
 This is no longer asserted only against a canned Herdr CLI.
 It was re-verified against a **real Herdr 0.8.2 server** with a real Cortex Code v1.1.84 worker and a real claude worker spawned into the same isolated lab session at the same moment, both idle at their composers and both demonstrably alive by pane read.
 Herdr saw one of them:

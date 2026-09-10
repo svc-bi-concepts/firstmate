@@ -888,10 +888,12 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # successful session inventory and returns `missing` only when it omits the
 # exact window; the Herdr adapter reuses its husk
 # classifier, and takes the task's harness family as an optional third argument
-# because its agent read is blind to a harness herdr's own build does not
+# because its agent read is blind to any harness herdr's own build does not
 # integrate with (bin/backends/herdr.sh's fm_backend_herdr_pane_agent_state owns
-# that rule). A caller with no harness in hand may omit it and gets today's
-# classification. Zellij remains unverified because its secondmate ghost-tab and
+# that rule, and derives the covered set from what herdr itself reports rather
+# than from a harness name pinned in firstmate). A caller with no harness in hand
+# may omit it and gets today's classification. Zellij remains unverified because
+# its secondmate ghost-tab and
 # agent-process recovery path has not been empirically validated. Orca and cmux
 # do not support secondmate spawns.
 fm_backend_agent_state() {  # <backend> <target> [harness]

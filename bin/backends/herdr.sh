@@ -1979,6 +1979,109 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
   [ "$presence" = dead ]
 }
 
+# --- integration coverage ----------------------------------------------------
+#
+# Herdr's agent read carries information about a harness only when its INSTALLED
+# BUILD ships an integration for that harness. For any other harness `agent get`
+# answers agent_not_found for a live worker exactly as it does for an empty
+# pane, so reading that response as agent-free proof would let callers stop,
+# relaunch into, or close a running worker.
+#
+# That is a general property of this backend, not a fact about one harness, so
+# the covered set is read from what herdr itself reports rather than pinned to a
+# harness name here. A name pinned in firstmate would go stale in both
+# directions: silently wrong the day herdr adds an integration, and silently
+# unsafe the day firstmate adds a harness herdr has never heard of.
+#
+# Verified on herdr 0.8.2 (2026-09-10): `integration status` exits 0 and prints
+# one `<name>: <state> (<path>)` line per integration the build knows, while
+# `integration list` prints the same names as `install <name>` usage lines and
+# exits 2. Both surfaces are read and either can carry the answer, so no single
+# rendered string is load-bearing.
+#
+# INSTALL STATE IS DELIBERATELY IGNORED, because it is not what makes the read
+# honest. Verified empirically on the same build: `integration status` reported
+# every integration "not installed" while a live claude pane still reported
+# `"agent":"claude","agent_status":"done"`, so herdr registers agents it
+# launches whether or not the harness-side hook file is present. Coverage is the
+# question; installation is a different one.
+FM_BACKEND_HERDR_COVERAGE_NAMES=
+FM_BACKEND_HERDR_COVERAGE_WARNED=
+
+# fm_backend_herdr_integration_names: the integration names the installed herdr
+# build knows, one per line. Prints nothing when neither surface yields a usable
+# set. A successful read is memoized for the process because the agent read sits
+# on the watcher's poll path; a failed read is deliberately NOT memoized, so a
+# transient herdr outage cannot pin this to "coverage unknown" for the lifetime
+# of a long-running watcher.
+fm_backend_herdr_integration_names() {
+  local bin out names
+  if [ -n "$FM_BACKEND_HERDR_COVERAGE_NAMES" ]; then
+    printf '%s' "$FM_BACKEND_HERDR_COVERAGE_NAMES"
+    return 0
+  fi
+  bin=$(fm_backend_herdr_bin)
+  out=$("$bin" integration status 2>/dev/null) || out=
+  names=$(printf '%s\n' "$out" \
+    | sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\):[[:space:]].*$/\1/p')
+  if [ -z "$names" ]; then
+    out=$("$bin" integration list 2>&1) || true
+    names=$(printf '%s\n' "$out" \
+      | sed -n 's/^[[:space:]]*herdr integration install[[:space:]]\{1,\}\([A-Za-z0-9_.-]\{1,\}\)[[:space:]]*$/\1/p')
+  fi
+  [ -z "$names" ] || FM_BACKEND_HERDR_COVERAGE_NAMES=$names
+  printf '%s' "$names"
+}
+
+# fm_backend_herdr_integration_covers: 0 when the installed build ships an
+# integration for <harness-family>, 1 when it provably ships none, and 2 when
+# herdr's own coverage could not be read at all - three outcomes the caller must
+# keep apart, because only the middle one is proof.
+fm_backend_herdr_integration_covers() {  # <harness-family>
+  local harness=${1-} names integration
+  [ -n "$harness" ] || return 2
+  names=$(fm_backend_herdr_integration_names)
+  [ -n "$names" ] || return 2
+  # pi-signed is firstmate's signed launch of the SAME pi agent and shares pi's
+  # extension surface (bin/fm-control-lib.sh's wiring paths, and fm-spawn.sh's
+  # shared extension supervision model), so herdr's `pi` integration covers it.
+  # ONLY an established equivalence belongs here: marking a harness covered on a
+  # guess is the unsafe direction, so a harness whose mapping is merely
+  # plausible is left uncovered and its reads refuse.
+  case "$harness" in
+    pi-signed) integration=pi ;;
+    *) integration=$harness ;;
+  esac
+  printf '%s\n' "$names" | grep -qxF "$integration"
+}
+
+# fm_backend_herdr_agent_read_is_blind: 0 when an agent_not_found response for
+# <harness-family> carries no information about whether an agent is present.
+#
+# A caller that names no harness keeps the harness-blind classification
+# unchanged; many callers legitimately have no harness in hand, and
+# bin/fm-backend.sh's fm_backend_agent_state owns that contract.
+#
+# When herdr's coverage cannot be read at all, this reports blind - the safe
+# direction, since every caller then refuses instead of acting on a read it
+# cannot justify - and warns once naming the harness and the herdr version
+# rather than degrading quietly.
+fm_backend_herdr_agent_read_is_blind() {  # <harness-family>
+  local harness=${1-} version
+  [ -n "$harness" ] || return 1
+  fm_backend_herdr_integration_covers "$harness"
+  case $? in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  if [ -z "$FM_BACKEND_HERDR_COVERAGE_WARNED" ]; then
+    FM_BACKEND_HERDR_COVERAGE_WARNED=1
+    version=$(herdr --version 2>/dev/null | head -1)
+    echo "warning: could not read herdr's own integration coverage (${version:-herdr version unknown}), so an agent read for harness '$harness' cannot be justified; treating it as uninformative and refusing to act on it" >&2
+  fi
+  return 0
+}
+
 # fm_backend_herdr_pane_agent_state: classify <pane_id> in <session> as one of
 # dead|no-agent|live|unknown, purely from the JSON body of two read-only
 # calls - never from process exit status, since a business-logic "not found"
@@ -2014,13 +2117,17 @@ fm_backend_herdr_explicit_close_pane_confirmed() {  # <session> <pane_id>
 # The optional third argument is the pane's VERIFIED HARNESS FAMILY
 # (bin/fm-control-lib.sh's fm_control_harness_family), and it exists because
 # agent_not_found only means "agent-free" for a harness herdr's installed build
-# actually integrates with. cortex is not one of them, so a live cortex worker
-# answers agent_not_found exactly like an empty restored pane does, and reading
-# that as no-agent would let the callers below stop, relaunch into, or close a
-# running worker. For cortex that response therefore resolves to `unknown` - the
-# honest verdict - so every caller that needs POSITIVE agent-free proof refuses.
-# A caller that passes no harness gets the harness-blind classification
-# unchanged, and no other harness's verdict is affected.
+# actually integrates with. For any harness it does not, a LIVE worker answers
+# agent_not_found exactly like an empty restored pane does, and reading that as
+# no-agent would let the callers below stop, relaunch into, or close a running
+# worker. Such a harness therefore resolves to `unknown` - the honest verdict -
+# so every caller that needs POSITIVE agent-free proof refuses.
+#
+# Which harnesses those are is NOT decided here: it is read from herdr's own
+# reported coverage by fm_backend_herdr_agent_read_is_blind above, so no harness
+# name is pinned in firstmate and the rule holds for a harness added on either
+# side later. A caller that passes no harness gets the harness-blind
+# classification unchanged.
 fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   local session=$1 pane_id=$2 harness=${3:-} out code presence status
   presence=$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")
@@ -2034,11 +2141,12 @@ fm_backend_herdr_pane_agent_state() {  # <session> <pane_id> [harness]
   out=$(fm_backend_herdr_cli "$session" agent get "$pane_id" 2>&1)
   code=$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null)
   if [ -n "$code" ]; then
-    case "$code:$harness" in
-      agent_not_found:cortex) printf 'unknown' ;;
-      agent_not_found:*) printf 'no-agent' ;;
-      *) printf 'unknown' ;;
-    esac
+    if [ "$code" = agent_not_found ] \
+      && ! fm_backend_herdr_agent_read_is_blind "$harness"; then
+      printf 'no-agent'
+    else
+      printf 'unknown'
+    fi
     return 0
   fi
   status=$(printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null)

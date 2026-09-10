@@ -205,9 +205,22 @@ The typed pointer (`Read the brief at <path> and follow it exactly.`) was echoed
 
 `fm_backend_agent_state` is the one signal this run disproves rather than confirms: it reported `dead` throughout - at the ready banner, mid-tool-call busy, and idle-with-`PONG` alike - even though rovo was demonstrably alive and responding the whole time.
 The cause is on Herdr's side, not firstmate's: `fm_backend_herdr_pane_agent_state` calls `herdr agent get <pane>`, which returned `{"error":{"code":"agent_not_found","message":"agent target w1:p1 not found"}}` for the live rovo pane, because `herdr integration status` lists no `rovo` entry at all (only `pi`, `omp`, `claude`, `codex`, `copilot`, `devin`, `droid`, `kimi`, `opencode`, `kilo`, `hermes`, `qodercli`, `qwen`, `cursor`, `mastracode`, `antigravity-cli`, and `grok` are known integrations on the installed Herdr build).
-Herdr has not shipped agent detection for rovo, so the classifier that recovery logic depends on (`fm_backend_agent_state`'s `alive`/`dead` distinction, and `fm_backend_herdr_tab_is_husk`'s reuse of it) cannot currently tell a live rovo pane apart from an empty one on the herdr backend; a live rovo worker placed on `backend=herdr` risks being misclassified as an agent-less husk by any recovery path that trusts this classifier.
-This is recorded as a known Herdr-side integration gap rather than a firstmate bug, and is deliberately left unpatched here: no herdr-scoped workaround is safe to add without risking a false-positive `alive` verdict for some unrelated idle shell, so `backend=herdr` remains usable for launching a rovo crewmate/scout but unverified for automatic dead/husk recovery until Herdr ships rovo detection (or `bin/backends/herdr.sh` gains an independent process-based fallback the way `bin/backends/tmux.sh` already has).
-`/exit` returned the pane to an idle shell prompt rather than closing it, unlike tmux which closes the whole window, so `fm_backend_agent_state` reading `dead` after exit is the textually correct verdict for an agent-less-but-present pane; it is only the ready/busy/idle misclassification while rovo was actually running that is the real finding above.
+Herdr has not shipped agent detection for rovo, so the classifier that recovery logic depends on (`fm_backend_agent_state`'s `alive`/`dead` distinction, and `fm_backend_herdr_tab_is_husk`'s reuse of it) cannot tell a live rovo pane apart from an empty one on the herdr backend.
+
+This is now guarded rather than merely recorded, and not by a rovo-specific patch.
+`fm_backend_herdr_pane_agent_state` derives the set of harnesses Herdr can see from Herdr's own reported integration coverage, so `agent_not_found` resolves to `unknown` for any harness that enumeration omits - rovo included - and every caller needing positive agent-free proof refuses instead of acting.
+That never invents an `alive` verdict, which is the false positive this record previously judged unsafe to risk: the honest verdict is `unreadable`, and refusal is its only consequence.
+Re-verified 2026-09-10 against Herdr 0.8.2 on a live pane, where `fm_backend_agent_state herdr <target> rovo` returned `unreadable` where it previously returned `dead`:
+
+```
+$ herdr integration status | cut -d: -f1 | tr '\n' ' '
+pi omp claude codex copilot devin droid kimi opencode kilo hermes qodercli qwen cursor mastracode antigravity-cli grok
+$ # before: dead (a live worker read as agent-free)   after: unreadable (refuses)
+```
+
+`backend=herdr` therefore remains usable for launching a rovo crewmate/scout, and a live rovo worker is no longer at risk of being torn down or relaunched over as an agent-less husk; automatic dead/husk RECOVERY for rovo stays unavailable until Herdr ships rovo detection or `bin/backends/herdr.sh` gains an independent process-based fallback the way `bin/backends/tmux.sh` already has.
+`/exit` returned the pane to an idle shell prompt rather than closing it, unlike tmux which closes the whole window, so a `dead` reading after exit would be the textually correct verdict for an agent-less-but-present pane; under the coverage rule an uncovered harness reports `unreadable` there too, which is the safe direction and costs only an automatic recovery this record already lists as unavailable.
+It is only the ready/busy/idle misclassification while rovo was actually running that was the real finding above.
 
 ## Skill-loading interop gap (documented, not fixed)
 

@@ -285,7 +285,10 @@ Unlike tmux process-name inspection, native registration can classify Pi without
 That agent-free reading holds only for a harness the installed Herdr build integrates with.
 For one it does not, `agent get` answers `agent_not_found` for a live worker exactly as it does for an empty pane, so callers pass the task's recorded harness family and such a harness resolves to `unknown` instead: husk replacement, the duplicate-launch guards, and every lifecycle verb then refuse rather than act on a blind read, while the steering doorbell still rings.
 A caller with no harness in hand keeps the harness-blind classification, and no integrated harness's verdict changes.
-`cortex` is the adapter this applies to today, verified live on a real server; [`verification/cortex.md`](verification/cortex.md) owns that evidence, and the same Herdr-side gap remains open and unguarded for `rovo` ([`verification/rovo.md`](verification/rovo.md)).
+Which harnesses those are is read from Herdr's own reported integration coverage rather than pinned to a harness name in firstmate, so the rule holds for a harness added on either side later.
+The adapter reads `integration status` first and the `integration list` usage text second, so no single rendered surface is load-bearing, and a coverage read that fails at all resolves to `unknown` with one warning naming the harness and version.
+Install state is deliberately ignored: Herdr registers agents it launches whether or not the harness-side hook file is present, so coverage is the question and installation is a different one.
+On Herdr 0.8.2 the uncovered adapters are `cortex`, `rovo`, `muse`, and `gemini`; [`verification/cortex.md`](verification/cortex.md) and [`verification/rovo.md`](verification/rovo.md) own the live evidence.
 
 The session-start sweep uses this probe.
 Mid-session secondmate agent-process liveness is not implemented because idle secondmates are deliberately exempt from stale-pane escalation and need a separate periodic identity signal.

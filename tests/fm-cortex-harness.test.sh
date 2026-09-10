@@ -28,7 +28,10 @@
 #   7. herdr's installed build has no cortex integration, so its agent read
 #      cannot see a cortex worker: agent_not_found is not evidence of absence
 #      for cortex, and reading it as one would let exit, --relaunch and the
-#      husk classifier act on a live worker. That scoping is cortex-only.
+#      husk classifier act on a live worker. That scoping is NOT cortex-only and
+#      must not be pinned to a harness name: the covered set is read from herdr's
+#      own reported integration coverage, so rovo, muse, and gemini behave
+#      identically today and a harness herdr adds later needs no firstmate change.
 #   8. The steering doorbell reads that same agent state, and it is the one
 #      consumer whose misread is SILENT rather than a refusal: unthreaded it
 #      never types and reports the worker exited, so a cortex worker on herdr
@@ -83,21 +86,56 @@ test_cortex_marker_outranks_inherited_claudecode() {
   pass "fm-harness.sh: cortex's markers outrank an inherited CLAUDECODE"
 }
 
+# make_fake_ps: a fakebin whose `ps` answers the ancestry walk from
+# FAKE_PS_COMM/FAKE_PS_ARGS, so a test controls the ancestry instead of
+# inheriting the real one.
+make_fake_ps() {  # <dir> -> echoes fakebin dir
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' "${FAKE_PS_COMM:?}"; exit 0 ;;
+  *"args="*) printf '%s\n' "${FAKE_PS_ARGS:?}"; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+  printf '%s\n' "$fakebin"
+}
+
 test_cortex_does_not_claim_configured_input_variables() {
-  local out var
+  local out var fakebin
+  # cortex is detected by ancestry as well as by its markers, and this suite now
+  # routinely RUNS inside a cortex worker (the fleet default), whose real
+  # ancestry genuinely is cortex. Clearing the markers alone would therefore let
+  # the true ancestry answer and make these negatives fail for a reason that has
+  # nothing to do with the variable under test, so ancestry is pinned to a plain
+  # shell here: the env var is then the only thing that could claim the identity.
+  fakebin=$(make_fake_ps "$TMP_ROOT/input-vars")
   # CORTEX_THINKING_EFFORT arrives from the operator's own settings.json `env`
   # block, and the CORTEX_AGENT_* family are read as inputs, so any of them can
   # be present in a process cortex never started. None may claim the identity.
   for var in CORTEX_THINKING_EFFORT CORTEX_AGENT_ENABLE_SUBAGENTS CORTEX_PROJECT_DIR; do
     out=$(env -u CLAUDECODE -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
           -u PI_CODING_AGENT -u GROK_AGENT -u CORTEX_SESSION_ID -u CORTEX_TASK_CONTEXT_ID \
+          FAKE_PS_COMM=bash FAKE_PS_ARGS='-bash' PATH="$fakebin:$PATH" \
           "$var=high" "$HARNESS")
     [ "$out" != cortex ] || fail "$var must never claim the cortex identity, got '$out'"
   done
   # An empty marker is not the verified signal either.
   out=$(env -u CLAUDECODE -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
-        -u PI_CODING_AGENT -u GROK_AGENT -u CORTEX_TASK_CONTEXT_ID CORTEX_SESSION_ID= "$HARNESS")
+        -u PI_CODING_AGENT -u GROK_AGENT -u CORTEX_TASK_CONTEXT_ID \
+        FAKE_PS_COMM=bash FAKE_PS_ARGS='-bash' PATH="$fakebin:$PATH" \
+        CORTEX_SESSION_ID= "$HARNESS")
   [ "$out" != cortex ] || fail "an empty CORTEX_SESSION_ID must not claim cortex, got '$out'"
+  # Divergence: with the SAME pinned-shell ancestry, a real marker must still be
+  # detected, so the negatives above cannot pass merely because detection broke.
+  out=$(env -u CLAUDECODE -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u GEMINI_CLI \
+        -u PI_CODING_AGENT -u GROK_AGENT -u CORTEX_TASK_CONTEXT_ID \
+        FAKE_PS_COMM=bash FAKE_PS_ARGS='-bash' PATH="$fakebin:$PATH" \
+        CORTEX_SESSION_ID=s1 "$HARNESS")
+  [ "$out" = cortex ] || fail "a real CORTEX_SESSION_ID must still claim cortex, got '$out'"
   pass "fm-harness.sh: a configured CORTEX_* input never claims the cortex identity"
 }
 
@@ -112,16 +150,7 @@ run_fake_ancestry_detect() {
 
 test_cortex_ancestry_matches_only_the_anchored_command_name() {
   local fakebin out
-  fakebin=$(fm_fakebin "$TMP_ROOT/anc")
-  cat > "$fakebin/ps" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-  *"comm="*) printf '%s\n' "${FAKE_PS_COMM:?}"; exit 0 ;;
-  *"args="*) printf '%s\n' "${FAKE_PS_ARGS:?}"; exit 0 ;;
-esac
-exit 1
-SH
-  chmod +x "$fakebin/ps"
+  fakebin=$(make_fake_ps "$TMP_ROOT/anc")
   # cortex is a compiled binary, so ancestry is a real detection path here even
   # with every marker cleared. The installed launcher is a symlink into a
   # versioned directory, so the resolved comm is a PATH whose basename is cortex.
@@ -184,6 +213,15 @@ test_cortex_pane_process_classifies_as_a_live_agent() {
 # the installed herdr build answers for a LIVE pane running a harness it has no
 # integration for, and it is indistinguishable from the same answer for a
 # genuinely empty restored pane.
+#
+# It also serves the two coverage surfaces the adapter derives the covered set
+# from. FM_TEST_HERDR_COVERAGE selects which one answers:
+#   both    - `integration status` answers (the normal case).
+#   list    - only the `integration list` usage text answers, so the fallback
+#             surface alone must carry the verdict.
+#   none    - neither answers, so coverage is unreadable.
+# Driving them apart is the point: a coverage rule that silently depended on one
+# surface would still pass a test that always offered both.
 make_herdr_agentless_fakebin() {  # <dir> -> echoes fakebin dir
   local fb="$1/fakebin"
   mkdir -p "$fb"
@@ -194,7 +232,28 @@ set -u
 # can assert on what herdr was actually ASKED to do - in particular whether the
 # doorbell was ever typed - and not only on a return code.
 [ -z "${FM_TEST_HERDR_LOG:-}" ] || printf '%s\n' "$*" >> "$FM_TEST_HERDR_LOG"
+# The integration names this fake build knows. cortex, rovo, muse, and gemini
+# are absent exactly as they are absent from the real herdr 0.8.2 build.
+FAKE_INTEGRATIONS="pi omp claude codex copilot kimi opencode cursor grok"
+COVERAGE=${FM_TEST_HERDR_COVERAGE:-both}
 case "${1:-} ${2:-}" in
+  "integration status")
+    [ "$COVERAGE" = both ] || exit 1
+    for n in $FAKE_INTEGRATIONS; do
+      printf '%s: not installed (/home/u/.%s/hooks/herdr-agent-state.sh)\n' "$n" "$n"
+    done
+    exit 0
+    ;;
+  "integration list")
+    [ "$COVERAGE" = none ] || {
+      printf 'herdr integration commands:\n'
+      for n in $FAKE_INTEGRATIONS; do
+        printf '  herdr integration install %s\n' "$n"
+      done
+    }
+    # The real build exits nonzero here: this is usage text, not a query.
+    exit 2
+    ;;
   "status --json") printf '{"client":{"version":"0.7.1","protocol":14},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
   "agent get") printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}" ;;
@@ -224,39 +283,105 @@ inbox_lib() {  # <state> <function> [args...]
 }
 
 test_cortex_herdr_agent_read_is_not_agent_free_proof() {
-  local fb out
+  local fb out h
   command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
   mkdir -p "$TMP_ROOT/herdr-blind"
   fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-blind")
 
-  # For cortex the read proves nothing, so it must resolve to an unreadable
-  # endpoint rather than a positively agent-free one.
-  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1 cortex')
-  [ "$out" = unreadable ] \
-    || fail "a cortex pane herdr cannot see must read unreadable, got '$out'"
-  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_pane_agent_state fmtest w1:p1 cortex')
-  [ "$out" = unknown ] \
-    || fail "agent_not_found is not evidence of absence for cortex, got '$out'"
+  # For EVERY harness this build ships no integration for, the read proves
+  # nothing, so it must resolve to an unreadable endpoint rather than a
+  # positively agent-free one. cortex is the harness the fleet runs on, but it is
+  # not special: the rule is derived from herdr's own coverage, so rovo, muse,
+  # and gemini - none of which herdr integrates with either - must behave
+  # identically. Pinning only cortex here is exactly the bug this replaces.
+  for h in cortex rovo muse gemini; do
+    out=$(herdr_backend_eval "$fb" "fm_backend_herdr_agent_state fmtest:w1:p1 $h")
+    [ "$out" = unreadable ] \
+      || fail "a $h pane herdr cannot see must read unreadable, got '$out'"
+    out=$(herdr_backend_eval "$fb" "fm_backend_herdr_pane_agent_state fmtest w1:p1 $h")
+    [ "$out" = unknown ] \
+      || fail "agent_not_found is not evidence of absence for $h, got '$out'"
+    out=$(herdr_backend_eval "$fb" "fm_backend_herdr_tab_is_husk fmtest w1:p1 $h && echo husk || echo refused")
+    [ "$out" = refused ] || fail "a $h tab must not be classified a husk, got '$out'"
+  done
 
-  # Divergence: the SAME read for a harness herdr does integrate with, and for a
+  # Divergence: the SAME read for a harness herdr DOES integrate with, and for a
   # caller that names no harness at all, must keep today's verdict exactly.
-  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1 claude')
+  # Without this the case above could pass vacuously by calling everything
+  # unreadable.
+  for h in claude codex pi opencode cursor grok kimi omp; do
+    out=$(herdr_backend_eval "$fb" "fm_backend_herdr_agent_state fmtest:w1:p1 $h")
+    [ "$out" = dead ] \
+      || fail "an agent-free $h pane must still read dead, got '$out'"
+  done
+  # pi-signed is firstmate's signed launch of the same pi agent, so herdr's `pi`
+  # integration covers it even though that exact name is not in herdr's list.
+  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1 pi-signed')
   [ "$out" = dead ] \
-    || fail "an agent-free claude pane must still read dead, got '$out'"
+    || fail "pi-signed must resolve through herdr's pi integration, got '$out'"
   out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_agent_state fmtest:w1:p1')
   [ "$out" = dead ] \
     || fail "a harness-less caller must keep the existing verdict, got '$out'"
-  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_pane_agent_state fmtest w1:p1 rovo')
-  [ "$out" = no-agent ] \
-    || fail "no other harness's classification may move, got '$out'"
-
-  # The husk classifier is the third guard: a cortex tab must never be a
-  # close-and-replace candidate on a read that cannot see its agent.
-  out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_tab_is_husk fmtest w1:p1 cortex && echo husk || echo refused')
-  [ "$out" = refused ] || fail "a cortex tab must not be classified a husk, got '$out'"
   out=$(herdr_backend_eval "$fb" 'fm_backend_herdr_tab_is_husk fmtest w1:p1 claude && echo husk || echo refused')
   [ "$out" = husk ] || fail "an agent-free claude tab must still classify as a husk, got '$out'"
-  pass "backends/herdr.sh: an agent_not_found read is not agent-free proof for cortex alone"
+  pass "backends/herdr.sh: an agent_not_found read is not agent-free proof for any harness herdr does not integrate with"
+}
+
+test_herdr_coverage_is_derived_not_pinned() {
+  local fb out
+  command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the herdr adapter)"; return 0; }
+  mkdir -p "$TMP_ROOT/herdr-coverage"
+  fb=$(make_herdr_agentless_fakebin "$TMP_ROOT/herdr-coverage")
+
+  # The covered set comes from herdr, so a build that DOES integrate with a
+  # harness must make that harness's read informative again with no firstmate
+  # change. This is the property a hardcoded harness name cannot have.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=both bash -c '
+    . "$0/bin/backends/herdr.sh"
+    # Same fake build, except this one also ships a cortex integration.
+    fm_backend_herdr_integration_names() { printf "claude\ncortex\n"; }
+    fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT")
+  [ "$out" = dead ] \
+    || fail "a build that integrates with cortex must make its read informative, got '$out'"
+
+  # Losing the primary surface must not lose the verdict: the usage-text
+  # fallback alone has to carry it, for both a covered and an uncovered harness.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT")
+  [ "$out" = dead ] \
+    || fail "the integration list fallback must still classify a covered harness, got '$out'"
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 cortex' "$ROOT")
+  [ "$out" = unreadable ] \
+    || fail "the integration list fallback must still refuse an uncovered harness, got '$out'"
+  # Assert the divergence itself, so this case cannot go quietly vacuous if both
+  # surfaces stopped answering.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=list bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_integration_names' "$ROOT")
+  case "$out" in
+    *claude*) : ;;
+    *) fail "the fallback surface must actually yield names, got '$out'" ;;
+  esac
+
+  # With NO readable coverage at all, the safe direction is refusal for every
+  # harness, and it must warn rather than degrade quietly.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>/dev/null)
+  [ "$out" = unreadable ] \
+    || fail "an unreadable coverage read must refuse rather than claim agent-free, got '$out'"
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1 claude' "$ROOT" 2>&1 >/dev/null)
+  case "$out" in
+    *"could not read herdr's own integration coverage"*claude*) : ;;
+    *) fail "an unreadable coverage read must warn naming the harness, got '$out'" ;;
+  esac
+  # A harness-less caller keeps its documented behavior even then: it never had
+  # a coverage question to ask.
+  out=$(PATH="$fb:$PATH" FM_TEST_HERDR_COVERAGE=none bash -c '
+    . "$0/bin/backends/herdr.sh"; fm_backend_herdr_agent_state fmtest:w1:p1' "$ROOT" 2>/dev/null)
+  [ "$out" = dead ] \
+    || fail "a harness-less caller must not be changed by a coverage read, got '$out'"
+  pass "backends/herdr.sh: coverage is derived from herdr, survives losing a surface, and refuses when unreadable"
 }
 
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped() {
@@ -710,6 +835,7 @@ test_cortex_does_not_claim_configured_input_variables
 test_cortex_ancestry_matches_only_the_anchored_command_name
 test_cortex_pane_process_classifies_as_a_live_agent
 test_cortex_herdr_agent_read_is_not_agent_free_proof
+test_herdr_coverage_is_derived_not_pinned
 test_cortex_herdr_exit_refuses_instead_of_claiming_already_stopped
 test_cortex_herdr_steering_rings_instead_of_reporting_a_dead_pane
 test_cortex_herdr_agent_alive_is_not_dead_for_a_live_worker

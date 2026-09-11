@@ -23,7 +23,8 @@ Model and effort stay machine-wide either way.
 
 Set `agent:` to the harness name.
 It also accepts an ordered fallback list, such as `[codex, grok]`, which no-mistakes works through when an agent fails.
-`no-mistakes doctor` lists the names it supports natively under `Agents`, and the config's own comment carries the current accepted values alongside `auto`.
+`no-mistakes doctor` lists the agent names it knows under `Agents`, but that section is not a list of natively supported harnesses: it carries `acpx`, the bridge itself, and `cursor`, an ACP alias, alongside the native names.
+The config's own comment carries the current accepted values alongside `auto`, and marks which of them are aliases.
 `auto` picks the first available native agent or ACP alias on the system, which is convenient and non-deterministic; name the harness when you care which one runs.
 The next section owns which of those names a given repository can actually use, so settle that before you commit to one.
 
@@ -85,8 +86,9 @@ agent_config:
 `agent_config` is where a model and reasoning effort are pinned, in one common spelling that no-mistakes maps down to whatever the selected harness actually accepts.
 The config's own comment is the current owner of the per-harness mapping and of the accepted effort levels, and a harness rejects any level it does not implement, so verify a pin rather than assuming it was honored.
 
-On the ACP path the only mapping is `acpx --model`, so an `acp:<target>` key takes `model` and nothing else.
-An `effort` under one is not merely ignored: it fails config load with `agent "acp:<target>" cannot express effort` and takes the whole gate down until you remove it.
+On the ACP path the only mapping is `acpx --model`, so an ACP-backed agent takes `model` and nothing else - which covers the bare `cursor` alias as much as an explicit `acp:<target>` spelling.
+An `effort` under one is not merely ignored: it fails config load with `agent "<name>" cannot express effort` and takes the whole gate down until you remove it.
+`agent_config.cursor` with `effort: high` is refused as `invalid agent_config.cursor: agent "cursor" cannot express effort`, while the same key carrying `model` alone loads; this is config-load validation, so the refusal lands even on a machine where the underlying tool is not installed.
 The escape hatch the error itself names is to bake the flag into that target's `acp_registry_overrides` command, if the tool's own command accepts one.
 A `review_agents` role agent is held to the same rule: `reviewer` set to `agent: "acp:cortex"` with `effort: high` fails config load as `invalid review_agents.reviewer: agent "acp:cortex" cannot express effort`, naming the offending role key, and leaves the whole gate unavailable until the effort key is removed.
 `no-mistakes doctor` does report this refusal, unlike the neutralization one.

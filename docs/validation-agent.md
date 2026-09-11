@@ -6,15 +6,17 @@ It exists because that choice is a separate setting from firstmate's own crew ha
 ## The gate resolves its own agent
 
 no-mistakes runs the validation pipeline, so the reviewer, fixer, and test agent inside a validation run are all whatever no-mistakes resolved for itself.
-It reads that from its own global configuration and never from firstmate's.
+It reads that from its own configuration and never from firstmate's crew settings.
 
 Switching crews to a harness therefore does NOT switch the validation gate.
 `config/crew-harness`, a per-spawn harness, and every `config/crew-dispatch.json` profile govern the workers firstmate launches; see [`configuration.md`](configuration.md) for those settings.
 None of them reaches the gate.
 Until you change the gate's own setting, code written by a crew on one tool is validated and fixed by a different tool, on a different account.
 
-The gate's setting lives in no-mistakes' global `config.yaml`, in the data directory `no-mistakes doctor` prints.
-The whole selection is global: a repository's own `.no-mistakes.yaml` does not choose the agent.
+The machine-wide setting lives in no-mistakes' global `config.yaml`, in the data directory `no-mistakes doctor` prints.
+A repository can pin `agent` in its own `.no-mistakes.yaml` instead, which is how a repository binds its gate agent to itself rather than to whichever machine happens to push it.
+That pin is trusted-only: no-mistakes reads `agent` and `commands` from the default-branch copy of the file, not from the copy on the pushed branch, unless the default-branch copy sets `allow_repo_commands`.
+Model and effort stay machine-wide either way - `agent_config`, `agent_path_override`, and `agent_args_override` are marked global-only in the config's own comments.
 
 ## Pointing the gate at a natively supported harness
 
@@ -69,18 +71,31 @@ agent_config:
 
 Quote `"acp:cortex"` as an `agent_config` key, because the colon is YAML syntax otherwise.
 
-## Model and reasoning effort, and the one-configuration limit
+## Model and reasoning effort
 
 `agent_config` is where a model and reasoning effort are pinned, in one common spelling that no-mistakes maps down to whatever the selected harness actually accepts.
 On the ACP path that mapping is `acpx --model`, so the model is the knob that reliably lands there; the config's own comment is the current owner of the per-harness mapping and of the accepted effort levels.
 A harness rejects any effort level it does not implement, so verify a pin rather than assuming it was honored.
 
-no-mistakes applies ONE agent configuration to a whole validation run.
-There is no per-step split, so a validation run cannot use one model to fix and another to review.
-A firstmate crew-dispatch policy that deliberately splits models - a strong model for implementation and a cheaper one for review, for instance - cannot be mirrored inside a validation run.
-Choose the single model that has to carry every step of the run, including review and auto-fix.
+`agent` and `agent_config` configure the whole run, and the Review step is the one place that can be split away from them.
+`review_agents` pins the `reviewer` and `fixer` roles - the review pass and its review-fix turns - to their own harness, model, and effort:
 
-Cortex's effort levels stop below firstmate's shared `xhigh`, so `xhigh` maps onto `high` there.
+```yaml
+review_agents:
+  reviewer:
+    agent: claude
+    model: sonnet
+  fixer:
+    agent: claude
+    model: opus
+```
+
+Each role must name an explicit harness: `auto` and an omitted `agent` are both refused at config load.
+The split reaches no further than Review.
+Rebase, test, lint, document, PR, and CI all run on the top-level `agent` and its `agent_config`, so that remains the choice that has to carry every other step.
+A firstmate crew-dispatch policy that splits a strong implementation model from a cheaper review model is therefore mirrored across a validation run's review and review-fix turns, not across the whole pipeline.
+
+Cortex has no `xhigh`, so the shared cap rule maps `xhigh` onto `high` there.
 The [cortex harness reference](../.agents/skills/harness-adapters/references/harness/cortex.md) owns that fact and the rest of the adapter's operating detail.
 
 ## Verify the result instead of assuming it

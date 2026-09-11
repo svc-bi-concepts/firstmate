@@ -1,0 +1,126 @@
+Operator guide docs/validation-agent.md driven against no-mistakes no-mistakes version v1.72.0 (9fcc865) 2026-09-08T13:12:57Z
+Isolated NM_HOME + scratch git repo; cwd = scratch repo
+
+=== doctor Agents section (guide: 'not a list of natively supported harnesses: it carries acpx and cursor') ===
+  Agents
+  ✓ claude          /opt/homebrew/bin/claude
+  ✓ codex           $HOME/.local/bin/codex
+  – grok            not found
+  – rovodev         not found
+  – opencode        not found
+  – pi              not found
+  – copilot         not found
+  – antigravity     not found
+  ✓ acpx            $HOME/.nvm/versions/node/v24.5.0/bin/acpx
+  – cursor          not found (cursor-agent)
+  ✓ gate validation  claude is runnable
+
+=== A: missing-mechanism refusal, native harness, model knob ===
+--- global config.yaml ---
+agent: claude
+agent_config:
+  rovodev:
+    model: some-model
+--- no-mistakes doctor ---
+  ✗ gate validation  unavailable: load config (invalid agent_config.rovodev: agent "rovodev" cannot express model; no-mistakes has no verified model mechanism for it (use agent_args_override.rovodev if your build of the CLI accepts one))
+
+=== B: missing-mechanism refusal, ACP alias, effort knob (cursor-agent NOT installed) ===
+--- global config.yaml ---
+agent: claude
+agent_config:
+  cursor:
+    effort: high
+--- no-mistakes doctor ---
+  ✗ gate validation  unavailable: load config (invalid agent_config.cursor: agent "cursor" cannot express effort; no-mistakes has no verified effort mechanism for it (bake the flag into acp_registry_overrides.cursor if the target's own command accepts one))
+
+=== C: missing-mechanism refusal, review_agents role key ===
+--- global config.yaml ---
+agent: claude
+review_agents:
+  reviewer:
+    agent: "acp:cortex"
+    model: claude-sonnet-4-5
+    effort: high
+--- no-mistakes doctor ---
+  ✗ gate validation  unavailable: load config (invalid review_agents.reviewer: agent "acp:cortex" cannot express effort; no-mistakes has no verified effort mechanism for it (bake the flag into acp_registry_overrides.cortex if the target's own command accepts one))
+
+=== D: unaccepted agent name (message lists accepted names, incl. antigravity) ===
+--- global config.yaml ---
+agent: bogusagent
+--- no-mistakes doctor ---
+  ✗ gate validation  unknown agent "bogusagent"; valid options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, antigravity, acp:<target> (set 'agent' in ~/.no-mistakes/config.yaml)
+
+=== E: antigravity accepted; fails on install state only ===
+--- global config.yaml ---
+agent: antigravity
+--- no-mistakes doctor ---
+  ✗ gate validation  no runnable agent found for configured agent antigravity (looked for: agy); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed
+
+=== F: worked example from the guide, quoted acp:cortex agent_config key ===
+--- global config.yaml ---
+agent: acp:cortex
+acpx_path: <acpx-path>
+acp_registry_overrides:
+  cortex: <cortex-path> acp serve
+agent_config:
+  "acp:cortex":
+    model: claude-sonnet-4-5
+--- no-mistakes doctor ---
+  ✓ gate validation  acp:cortex is runnable
+
+=== G: same example, unquoted acp:cortex key ===
+--- global config.yaml ---
+agent: acp:cortex
+acpx_path: <acpx-path>
+acp_registry_overrides:
+  cortex: <cortex-path> acp serve
+agent_config:
+  acp:cortex:
+    model: claude-sonnet-4-5
+--- no-mistakes doctor ---
+  ✓ gate validation  acp:cortex is runnable
+
+=== H: made-up ACP target, no registry override, still reports runnable ===
+--- global config.yaml ---
+agent: acp:totallymadeup
+acpx_path: <acpx-path>
+--- no-mistakes doctor ---
+  ✓ gate validation  acp:totallymadeup is runnable
+
+=== I: review_agents role naming auto ===
+--- global config.yaml ---
+agent: claude
+review_agents:
+  reviewer:
+    agent: auto
+    model: sonnet
+--- no-mistakes doctor ---
+  ✗ gate validation  unavailable: load config (review_agents.reviewer.agent must name an explicit harness, got "auto")
+
+=== J: review_agents role with agent omitted ===
+--- global config.yaml ---
+agent: claude
+review_agents:
+  reviewer:
+    model: sonnet
+--- no-mistakes doctor ---
+  ✗ gate validation  unavailable: load config (review_agents.reviewer.agent must name an explicit harness, got "")
+
+=== M: ordered fallback list, first entry not installed ===
+--- global config.yaml ---
+agent: [grok, claude]
+--- no-mistakes doctor ---
+  ✓ gate validation  claude is runnable
+
+=== L: acpx removed from PATH (guide: acpx is a hard requirement) ===
+  – acpx            not found
+  – cursor          not found (cursor-agent, acpx)
+  ✗ gate validation  no runnable agent found for configured agent acp:cortex (looked for: $HOME/.local/bin/cortex, acpx); the gate cannot validate without an agent; install a supported native agent, choose an available agent in ~/.no-mistakes/config.yaml, or configure agent: acp:<target> with acpx installed
+
+=== generated global config comment (guide: marks cursor as alias, Options omits antigravity) ===
+5:# Options: auto, claude, codex, grok, rovodev, opencode, pi, copilot, cursor, acp:<target>
+6:# "auto" detects the first available native agent or ACP alias on your system
+7:# "cursor" is an ACP alias for acp:cursor using cursor-agent acp via acpx
+14:# Optional path to the user-installed acpx binary for acp:<target> agents and ACP aliases
+25:# Optional ACP target command overrides for acp:<target> agents and ACP aliases
+96:# implement. rovodev and antigravity expose no mechanism no-mistakes can set, so

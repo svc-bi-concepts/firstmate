@@ -1,0 +1,12 @@
+$ acpx --agent "<your-cortex-path> acp serve" --approve-all --format text exec "Reply with the single word: ok"
+[client] initialize (running)
+
+[client] session/new (running)
+ok
+
+[done] end_turn
+
+# Troubleshooting case from the guide: the bare prompt form (no exec subcommand)
+$ acpx --agent "<your-cortex-path> acp serve" --approve-all --format text "Reply with the single word: ok"
+⚠ No acpx session found (searched up to $SCRATCH).
+Create one: acpx codex sessions new

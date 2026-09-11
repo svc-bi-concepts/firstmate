@@ -135,6 +135,7 @@ Give absolute paths in `acpx_path` and in every `acp_registry_overrides` command
 **A run is refused for not neutralizing project instructions, but the agent it names is one of the three that can.**
 With an ordered `agent:` list in a repository carrying the opt-in, the refusal names the first entry rather than the offending one: a `[claude, "acp:cortex"]` list was refused as `gate agent "claude" does not neutralize ...`, the entry actually responsible was never named, and `no-mistakes doctor` reported that same `claude` runnable.
 Check every entry in the configured list, not the agent the message names.
+A `review_agents` role agent triggers the same refusal, but there the message identifies it: `agent: claude` with `review_agents.reviewer.agent: "acp:cortex"` failed before the first step as `create review_agents.reviewer: gate agent "acp:cortex" does not neutralize ...`, naming the role and the offending agent.
 
 **A one-shot check fails with no session found.**
 `acpx`'s bare prompt form expects an existing session for that agent and exits without prompting when it finds none.

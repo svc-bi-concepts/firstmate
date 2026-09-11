@@ -16,11 +16,13 @@ Until you change the gate's own setting, code written by a crew on one tool is v
 The machine-wide setting lives in no-mistakes' global `config.yaml`, in the data directory `no-mistakes doctor` prints.
 A repository can pin `agent` in its own `.no-mistakes.yaml` instead, which is how a repository binds its gate agent to itself rather than to whichever machine happens to push it.
 That pin is trusted-only: no-mistakes reads `agent` and `commands` from the default-branch copy of the file, not from the copy on the pushed branch, unless the default-branch copy sets `allow_repo_commands`.
-Model and effort stay machine-wide either way - `agent_config` and `agent_args_override` are both marked global-only in the config's own comments.
+Model and effort stay machine-wide either way.
+`agent_config` and `agent_args_override` are both marked global-only in the config's own comments, and `review_agents` is global-only in effect: a copy in a repository's `.no-mistakes.yaml` is ignored rather than rejected, so even one naming a harness no-mistakes does not accept loads without complaint while Review still runs on the global agent.
 
 ## Pointing the gate at a natively supported harness
 
 Set `agent:` to the harness name.
+It also accepts an ordered fallback list, such as `[codex, grok]`, which no-mistakes works through when an agent fails.
 `no-mistakes doctor` lists the names it supports natively under `Agents`, and the config's own comment carries the current accepted values alongside `auto`.
 `auto` picks the first available native agent or ACP alias on the system, which is convenient and non-deterministic; name the harness when you care which one runs.
 The next section owns which of those names a given repository can actually use, so settle that before you commit to one.
@@ -31,6 +33,7 @@ A repository opts into suppressing its own `AGENTS.md` and `CLAUDE.md` for gate 
 A gate agent that cannot neutralize those files is refused there rather than allowed to read the project's own agent instructions.
 That rule is about the agent you chose, not about any one way of reaching it: only `codex`, `claude`, and `pi` carry a verified neutralization knob, and only while `agent_args_override` does not replace it.
 Every other native harness is refused in such a repository, an `acp:<target>` agent is refused, and `auto` is refused whenever it resolves to one of them - which makes the outcome a property of the machine rather than of your configuration.
+An ordered fallback list has to satisfy the rule in every entry that resolves on the machine, not just the entry that would run: in an opt-in repository, `[claude, "acp:cortex"]` with both resolvable failed before the first step, while `[claude, grok]` on a machine without grok installed ran normally, because an entry whose binary is not installed is pruned and does not count against the rule.
 
 The trigger is that opt-in, not the presence of the files.
 A repository that carries `AGENTS.md` or `CLAUDE.md` and does not set `disable_project_settings` launches any runnable gate agent normally, ACP-bridged ones included.
@@ -112,7 +115,7 @@ The [cortex harness reference](../.agents/skills/harness-adapters/references/har
 Run `no-mistakes doctor`.
 For an ACP setup it should show `acpx` found with its resolved path, and a gate validation line naming your chosen agent as runnable.
 Read that line narrowly: for an `acp:` agent it reports that `acpx` was found, not that your target resolves, and a made-up target with no `acp_registry_overrides` entry still reports runnable.
-It does not clear the repository-dependent refusal above either, so confirm the target repository does not set `disable_project_settings` before relying on any gate agent other than `codex`, `claude`, or `pi`.
+It does not clear the repository-dependent refusal above either, so confirm the target repository does not set `disable_project_settings` before relying on any gate agent, or any resolvable fallback-list entry, other than `codex`, `claude`, or `pi`.
 
 The one-shot prompt below is what proves the bridge, so spend one before trusting it with a real run:
 
@@ -128,6 +131,10 @@ Only then start a validation run.
 **The bridge is not found even though it works in your shell.**
 The gate runs from a background daemon, which need not see the `PATH` your interactive shell builds, so a binary under a version manager's shim directory can be invisible to it.
 Give absolute paths in `acpx_path` and in every `acp_registry_overrides` command.
+
+**A run is refused for not neutralizing project instructions, but the agent it names is one of the three that can.**
+With an ordered `agent:` list in a repository carrying the opt-in, the refusal names the first entry rather than the offending one: a `[claude, "acp:cortex"]` list was refused as `gate agent "claude" does not neutralize ...`, the entry actually responsible was never named, and `no-mistakes doctor` reported that same `claude` runnable.
+Check every entry in the configured list, not the agent the message names.
 
 **A one-shot check fails with no session found.**
 `acpx`'s bare prompt form expects an existing session for that agent and exits without prompting when it finds none.

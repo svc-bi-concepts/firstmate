@@ -23,11 +23,11 @@ Model and effort stay machine-wide either way - `agent_config` and `agent_args_o
 Set `agent:` to the harness name.
 `no-mistakes doctor` lists the names it supports natively under `Agents`, and the config's own comment carries the current accepted values alongside `auto`.
 `auto` picks the first available native agent or ACP alias on the system, which is convenient and non-deterministic; name the harness when you care which one runs.
-Settle the constraint in the next section before you commit to a name: in a repository that opts into suppressing its own agent instructions, most of the names no-mistakes drives are refused, and so is whatever `auto` resolves to on that machine.
+The next section owns which of those names a given repository can actually use, so settle that before you commit to one.
 
 ## A repository that suppresses its own agent instructions restricts the gate agent
 
-`disable_project_settings: true` in a repository's trusted `.no-mistakes.yaml` tells no-mistakes to suppress that project's `AGENTS.md` and `CLAUDE.md` for gate agents.
+A repository opts into suppressing its own `AGENTS.md` and `CLAUDE.md` for gate agents with `disable_project_settings: true` in its `.no-mistakes.yaml`; [`architecture.md`](architecture.md#no-mistakes-gate-authority-boundary) owns that setting and how no-mistakes sources it.
 A gate agent that cannot neutralize those files is refused there rather than allowed to read the project's own agent instructions.
 That rule is about the agent you chose, not about any one way of reaching it: only `codex`, `claude`, and `pi` carry a verified neutralization knob, and only while `agent_args_override` does not replace it.
 Every other native harness is refused in such a repository, an `acp:<target>` agent is refused, and `auto` is refused whenever it resolves to one of them - which makes the outcome a property of the machine rather than of your configuration.
@@ -39,7 +39,7 @@ The refusal arrives as a failed run before the first step, naming the gate agent
 `no-mistakes doctor` does NOT catch this, because the refusal depends on the repository being validated while doctor answers only whether the agent is runnable at all.
 A doctor line reporting your chosen agent runnable is therefore compatible with every run in such a repository failing.
 
-firstmate's own repository sets `disable_project_settings: true` in its tracked `.no-mistakes.yaml`, so its gate agent has to be `codex`, `claude`, or `pi`, and validating firstmate through the ACP bridge is not available.
+firstmate carries that opt-in, so its own gate agent has to be `codex`, `claude`, or `pi`, and validating firstmate through the ACP bridge is not available.
 That is the tradeoff the opt-in buys: such a repository can still run its crews on any tool, an ACP-bridged one included, but its validation gate has to be one of the three natively neutralizing agents.
 
 ## Pointing the gate at a harness no-mistakes cannot drive natively
@@ -100,6 +100,7 @@ review_agents:
 ```
 
 Each role must name an explicit harness: `auto` and an omitted `agent` are both refused at config load.
+Every configured role agent is subject to the neutralization rule above as well, so pinning a non-neutralizing harness to `reviewer` or `fixer` fails a run in such a repository exactly as a non-neutralizing top-level `agent` does, even when that top-level `agent` is one of the three.
 The split reaches no further than Review.
 Rebase, test, lint, document, PR, and CI all run on the top-level `agent` and its `agent_config`, so that remains the choice that has to carry every other step.
 A firstmate crew-dispatch policy that splits a strong implementation model from a cheaper review model is therefore mirrored across a validation run's review and review-fix turns, not across the whole pipeline.

@@ -5,7 +5,7 @@ It exists because that choice is a separate setting from firstmate's own crew ha
 
 ## The gate resolves its own agent
 
-no-mistakes runs the validation pipeline, so the reviewer, fixer, and test agent inside a validation run are all whatever no-mistakes resolved for itself.
+no-mistakes runs the validation pipeline, so every agent inside a validation run is one no-mistakes resolved for itself.
 It reads that from its own configuration and never from firstmate's crew settings.
 
 Switching crews to a harness therefore does NOT switch the validation gate.
@@ -16,7 +16,7 @@ Until you change the gate's own setting, code written by a crew on one tool is v
 The machine-wide setting lives in no-mistakes' global `config.yaml`, in the data directory `no-mistakes doctor` prints.
 A repository can pin `agent` in its own `.no-mistakes.yaml` instead, which is how a repository binds its gate agent to itself rather than to whichever machine happens to push it.
 That pin is trusted-only: no-mistakes reads `agent` and `commands` from the default-branch copy of the file, not from the copy on the pushed branch, unless the default-branch copy sets `allow_repo_commands`.
-Model and effort stay machine-wide either way - `agent_config`, `agent_path_override`, and `agent_args_override` are marked global-only in the config's own comments.
+Model and effort stay machine-wide either way - `agent_config` and `agent_args_override` are both marked global-only in the config's own comments.
 
 ## Pointing the gate at a natively supported harness
 
@@ -30,26 +30,30 @@ Use the `acp:<target>` agent form.
 Both sides of that bridge speak the Agent Client Protocol, and `acpx` is the piece in the middle: a headless ACP client that drives an ACP agent over stdio, so no-mistakes can use a tool it has no native integration for.
 `acpx` is user-installed and is a hard requirement for this setup rather than an optional extra - `no-mistakes doctor` lists it under `Agents` and reports it not found until you install it.
 
-Three keys make an ACP target work:
+Two keys always apply, and a third covers the targets `acpx` does not already know:
 
 - `agent: acp:<target>` selects it.
 - `acpx_path` points at the installed `acpx` binary.
 - `acp_registry_overrides` maps `<target>` to the command that starts that tool as an ACP agent.
 
-A target name is yours to choose; it is meaningful only as the key `acp_registry_overrides` resolves.
+`acpx` ships its own registry, which `acpx --help` lists as subcommands, so a target it already knows resolves with no override at all.
+The override is what makes a target it does not know, such as `cortex`, resolvable; for one of those the name is yours to choose, and it is meaningful only as the key `acp_registry_overrides` resolves.
 
-### The ACP bridge is refused in a repository carrying agent instructions
+### The ACP bridge is refused in a repository that neutralizes project instructions
 
-An `acp:<target>` gate agent cannot validate a repository that carries `AGENTS.md` or `CLAUDE.md`.
-no-mistakes refuses to launch it there because it cannot prove it can suppress those project instructions for an ACP-bridged agent, and a validation agent reading the project's own agent instructions is not a validation agent.
+`disable_project_settings: true` in a repository's trusted `.no-mistakes.yaml` tells no-mistakes to suppress that project's `AGENTS.md` and `CLAUDE.md` for gate agents.
+An ACP-bridged agent cannot honor that, so no-mistakes refuses to launch an `acp:<target>` gate agent in such a repository rather than let a validation agent read the project's own agent instructions.
 Only `codex`, `claude`, and `pi` carry a verified neutralization knob, and only while `agent_args_override` does not replace it.
+
+The trigger is that opt-in, not the presence of the files.
+A repository that carries `AGENTS.md` or `CLAUDE.md` and does not set `disable_project_settings` launches an `acp:` gate agent normally, and the bridge is available to it.
 
 The refusal arrives as a failed run before the first step, naming the gate agent and the instruction files it will not neutralize.
 `no-mistakes doctor` does NOT catch this, because the refusal depends on the repository being validated while doctor answers only whether the agent is runnable at all.
 A doctor line reporting your `acp:` agent runnable is therefore compatible with every run in such a repository failing.
 
-firstmate's own repository carries both files, so validating firstmate through the ACP bridge is not available.
-Where that leaves a single-vendor setup is a real tradeoff: a repository with agent instructions can run its crews on an ACP-bridged tool, but its validation gate has to be one of the three natively neutralizing agents.
+firstmate's own repository sets `disable_project_settings: true` in its tracked `.no-mistakes.yaml`, so validating firstmate through the ACP bridge is not available.
+That is the tradeoff the opt-in buys: such a repository can still run its crews on an ACP-bridged tool, but its validation gate has to be one of the three natively neutralizing agents.
 
 ## Cortex Code as the worked example
 
@@ -69,13 +73,16 @@ agent_config:
     model: <model-id>
 ```
 
-Quote `"acp:cortex"` as an `agent_config` key, because the colon is YAML syntax otherwise.
+`acp:cortex` parses as an `agent_config` key unquoted too, because a colon only ends a key when whitespace follows it, but quoting a key that contains one is the safer habit.
 
 ## Model and reasoning effort
 
 `agent_config` is where a model and reasoning effort are pinned, in one common spelling that no-mistakes maps down to whatever the selected harness actually accepts.
-On the ACP path that mapping is `acpx --model`, so the model is the knob that reliably lands there; the config's own comment is the current owner of the per-harness mapping and of the accepted effort levels.
-A harness rejects any effort level it does not implement, so verify a pin rather than assuming it was honored.
+The config's own comment is the current owner of the per-harness mapping and of the accepted effort levels, and a harness rejects any level it does not implement, so verify a pin rather than assuming it was honored.
+
+On the ACP path the only mapping is `acpx --model`, so an `acp:<target>` key takes `model` and nothing else.
+An `effort` under one is not merely ignored: it fails config load with `agent "acp:<target>" cannot express effort` and takes the whole gate down until you remove it.
+The escape hatch the error itself names is to bake the flag into that target's `acp_registry_overrides` command, if the tool's own command accepts one.
 
 `agent` and `agent_config` configure the whole run, and the Review step is the one place that can be split away from them.
 `review_agents` pins the `reviewer` and `fixer` roles - the review pass and its review-fix turns - to their own harness, model, and effort:
@@ -95,17 +102,18 @@ The split reaches no further than Review.
 Rebase, test, lint, document, PR, and CI all run on the top-level `agent` and its `agent_config`, so that remains the choice that has to carry every other step.
 A firstmate crew-dispatch policy that splits a strong implementation model from a cheaper review model is therefore mirrored across a validation run's review and review-fix turns, not across the whole pipeline.
 
-Cortex has no `xhigh`, so the shared cap rule maps `xhigh` onto `high` there.
-The [cortex harness reference](../.agents/skills/harness-adapters/references/harness/cortex.md) owns that fact and the rest of the adapter's operating detail.
+Firstmate's own crew adapters cap effort instead of refusing it: Cortex has no `xhigh`, so the shared cap rule maps `xhigh` onto `high` for a crew launch.
+That rule is crew-side only and does not reach the gate, where an `effort` for `acp:cortex` is refused outright.
+The [cortex harness reference](../.agents/skills/harness-adapters/references/harness/cortex.md) owns it and the rest of the adapter's operating detail.
 
 ## Verify the result instead of assuming it
 
 Run `no-mistakes doctor`.
 For an ACP setup it should show `acpx` found with its resolved path, and a gate validation line naming your chosen agent as runnable.
-A configuration that parses is not evidence the bridge works; that line is.
-That line does not clear the repository-dependent refusal above, so confirm the target repository carries no `AGENTS.md` or `CLAUDE.md` before relying on an `acp:` gate agent for it.
+Read that line narrowly: for an `acp:` agent it reports that `acpx` was found, not that your target resolves, and a made-up target with no `acp_registry_overrides` entry still reports runnable.
+It does not clear the repository-dependent refusal above either, so confirm the target repository does not set `disable_project_settings` before relying on an `acp:` gate agent for it.
 
-Then spend one one-shot prompt through the bridge before trusting it with a real run:
+The one-shot prompt below is what proves the bridge, so spend one before trusting it with a real run:
 
 ```
 acpx --agent "<your-cortex-path> acp serve" --approve-all --format text exec "Reply with the single word: ok"

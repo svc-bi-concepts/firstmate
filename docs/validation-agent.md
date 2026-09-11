@@ -24,8 +24,8 @@ Model and effort stay machine-wide either way.
 Set `agent:` to the harness name.
 It also accepts an ordered fallback list, such as `[codex, grok]`, which no-mistakes works through when an agent fails.
 `no-mistakes doctor` lists the agent names it knows under `Agents`, but that section is not a list of natively supported harnesses: it carries `acpx`, the bridge itself, and `cursor`, an ACP alias, alongside the native names.
-Neither that section nor the config's own comment decides which names are accepted: the comment marks `cursor` as an ACP alias, but its `Options:` line omits `antigravity`, which is accepted.
-What decides is no-mistakes' own config-load validation, and its two failures are distinguishable: a name it does not accept is rejected at load with a message enumerating the accepted values, while an accepted name whose binary is missing loads and fails on install state instead - `agent: antigravity` reports `no runnable agent found for configured agent antigravity (looked for: agy)`.
+Neither that section nor the config's own comment enumerates the accepted names in full: the comment marks `cursor` as an ACP alias, but its `Options:` line omits `antigravity`, which is accepted.
+Name one and read what the gate says: a name it does not accept is refused with a message listing the names it does accept, so take that message over either list.
 `auto` picks the first available native agent or ACP alias on the system, which is convenient and non-deterministic; name the harness when you care which one runs.
 The next section owns which of those names a given repository can actually use, so settle that before you commit to one.
 
@@ -85,14 +85,12 @@ agent_config:
 ## Model and reasoning effort
 
 `agent_config` is where a model and reasoning effort are pinned, in one common spelling that no-mistakes maps down to whatever the selected harness actually accepts.
-The config's own comment is the current owner of the per-harness mapping and of the accepted effort levels.
+The config's own comment is the current owner of the per-harness mapping and of the accepted effort levels, and a pin is worth verifying rather than assuming it was honored.
 
 Pinning a knob an agent's adapter has no mechanism for is not ignored: it fails config load with `agent "<name>" cannot express <knob>` and takes the whole gate down until you remove the key.
-The rule is about the knob and the adapter, not about how you reach the agent - it holds for a native harness, an `acp:<target>`, and an alias alike, for `model` as much as for `effort`, and it holds whether or not the underlying tool is installed, because nothing has run yet at config load.
+The rule is about the knob and the adapter, not about how you reach the agent - it holds for a native harness, an `acp:<target>`, and an alias alike, for `model` as much as for `effort`, and it holds whether or not the underlying tool is installed.
 It covers `agent_config` entries and `review_agents` role entries alike, and the error names the offending key and the knob: `invalid agent_config.rovodev: agent "rovodev" cannot express model` for a native harness, `invalid agent_config.cursor: agent "cursor" cannot express effort` on a machine with no `cursor-agent` installed, `invalid review_agents.reviewer: agent "acp:cortex" cannot express effort` for a role key.
 The escape hatch the error itself names is `agent_args_override` for a native harness, or baking the flag into that target's `acp_registry_overrides` command on the ACP path, if the tool's own command accepts one.
-
-An effort *level* the harness does not implement is the separate, softer case, because the level is not what config load checks: `agent_config.copilot` loads with each of `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`, so an unimplemented level costs you the pin rather than the gate - verify a pin rather than assuming it was honored.
 `no-mistakes doctor` does report the missing-mechanism refusal, unlike the neutralization one.
 
 `agent` and `agent_config` configure the whole run, and the Review step is the one place that can be split away from them.

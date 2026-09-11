@@ -88,6 +88,8 @@ The config's own comment is the current owner of the per-harness mapping and of 
 On the ACP path the only mapping is `acpx --model`, so an `acp:<target>` key takes `model` and nothing else.
 An `effort` under one is not merely ignored: it fails config load with `agent "acp:<target>" cannot express effort` and takes the whole gate down until you remove it.
 The escape hatch the error itself names is to bake the flag into that target's `acp_registry_overrides` command, if the tool's own command accepts one.
+A `review_agents` role agent is held to the same rule: `reviewer` set to `agent: "acp:cortex"` with `effort: high` fails config load as `invalid review_agents.reviewer: agent "acp:cortex" cannot express effort`, naming the offending role key, and leaves the whole gate unavailable until the effort key is removed.
+`no-mistakes doctor` does report this refusal, unlike the neutralization one.
 
 `agent` and `agent_config` configure the whole run, and the Review step is the one place that can be split away from them.
 `review_agents` pins the `reviewer` and `fixer` roles - the review pass and its review-fix turns - to their own harness, model, and effort:
